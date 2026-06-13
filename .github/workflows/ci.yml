@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            printf 'gofmt needed:\n%s\n' "$files"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test race
+        run: go test -race ./...
+
+      - name: Smoke test version
+        run: go run ./cmd/passage version
+
+      - name: Smoke test fake store
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          store="$tmp/store"
+          state="$tmp/state"
+          bin="$tmp/bin"
+          mkdir -p "$store/work/github" "$bin"
+          touch "$store/work/github.gpg" "$store/work/github/mfa.gpg"
+          cat > "$bin/pass" <<'SH'
+          #!/bin/sh
+          if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github ]; then
+            printf 'pw\nuser: alice\n'
+            exit 0
+          fi
+          if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then
+            printf 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\n'
+            exit 0
+          fi
+          exit 9
+          SH
+          chmod +x "$bin/pass"
+          PASSAGE_PASS_BINARY="$bin/pass" go run ./cmd/passage list --json --store-dir "$store" --state-dir "$state"
+          PASSAGE_PASS_BINARY="$bin/pass" go run ./cmd/passage totp work/github --no-copy --at 59 --store-dir "$store" --state-dir "$state"
+
+      - name: Build native binary
+        run: go build -trimpath -o passage ./cmd/passage
+
+  cross-build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-build binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -o "dist/passage_${GOOS}_${GOARCH}" ./cmd/passage
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  goreleaser-check:
+    name: goreleaser check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Validate goreleaser config
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          args: check

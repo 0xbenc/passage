@@ -1,0 +1,5 @@
+dist/
+/passage
+*.test
+*.prof
+coverage.out

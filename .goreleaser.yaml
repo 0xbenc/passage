@@ -1,0 +1,120 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: passage
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: passage
+    main: ./cmd/passage
+    binary: passage
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.FullCommit}}
+      - -X main.date={{.CommitDate}}
+
+archives:
+  - id: passage
+    ids:
+      - passage
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
+      - man/*
+
+nfpms:
+  - id: passage
+    ids:
+      - passage
+    package_name: passage
+    vendor: 0xbenc
+    homepage: https://github.com/0xbenc/passage
+    maintainer: Ben Chapman <info@offcourtcreations.com>
+    description: Terminal UI for GNU Pass with pins, recents, and native TOTP.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    overrides:
+      deb:
+        dependencies:
+          - pass
+          - gnupg
+      rpm:
+        dependencies:
+          - password-store
+          - gnupg2
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/passage/LICENSE
+      - src: completions/passage.bash
+        dst: /usr/share/bash-completion/completions/passage
+      - src: completions/passage.zsh
+        dst: /usr/share/zsh/site-functions/_passage
+      - src: completions/passage.fish
+        dst: /usr/share/fish/vendor_completions.d/passage.fish
+      - src: man/passage.1
+        dst: /usr/share/man/man1/passage.1
+
+homebrew_casks:
+  - name: passage
+    ids:
+      - passage
+    binaries:
+      - passage
+    manpages:
+      - man/passage.1
+    completions:
+      bash: completions/passage.bash
+      zsh: completions/passage.zsh
+      fish: completions/passage.fish
+    homepage: https://github.com/0xbenc/passage
+    description: Terminal UI for GNU Pass with pins, recents, and native TOTP.
+    repository:
+      owner: 0xbenc
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: goreleaserbot@users.noreply.github.com
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "passage {{ .Tag }}"

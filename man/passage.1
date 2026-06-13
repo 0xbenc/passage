@@ -1,0 +1,141 @@
+.TH PASSAGE 1 "June 2026" "passage" "User Commands"
+.SH NAME
+passage \- terminal UI for GNU Pass with pins, recents, and native TOTP
+.SH SYNOPSIS
+.B passage
+[\fIfilter\fR]
+.br
+.B passage mfa
+[\fIfilter\fR]
+.br
+.B passage
+\fIcommand\fR [\fIflags\fR]
+.SH DESCRIPTION
+.B passage
+reads a GNU Pass password store, presents an interactive terminal picker,
+copies passwords, reveals secrets only on explicit command, and generates TOTP
+codes from sibling
+.I mfa
+entries.
+.PP
+GNU Pass remains the source of truth. passage stores only local metadata:
+pins and last-used timestamps.
+.SH COMMANDS
+.TP
+.B list
+List entries. Supports
+.BR --json ,
+.BR --filter ,
+and
+.BR --mfa .
+.TP
+.B show
+Show metadata for one entry. Does not decrypt secrets.
+.TP
+.B copy
+Copy an entry's password, defined as the first line of
+.BR "pass show" .
+.TP
+.B reveal
+Reveal an entry's password until a key is pressed. Also attempts to copy it.
+.TP
+.B totp
+Generate a TOTP code from
+.I ENTRY/mfa
+or from
+.I ENTRY
+itself when it ends in
+.IR /mfa .
+.TP
+.B mfa
+Open the picker in MFA-only mode.
+.TP
+.B pin / unpin
+Set or clear an entry pin.
+.TP
+.B clear-recents / clear-pins / clear-clipboard
+Clear local metadata or clipboard contents.
+.TP
+.B doctor
+Check pass, gpg, clipboard tools, and .gpg-id recipient health.
+.TP
+.B keys
+List local GPG public keys, ownertrust, and secret-key availability.
+.TP
+.B version
+Print build version information.
+.SH TUI KEYS
+.PP
+Printable characters always type into the filter.
+.TP
+.B Enter
+Run the default action: copy password, or show/copy TOTP on an MFA-secret row.
+.TP
+.B Ctrl-Y
+Copy password; in MFA-only mode, show/copy TOTP.
+.TP
+.B Ctrl-R
+Reveal password; in MFA-only mode, show/copy TOTP.
+.TP
+.B Ctrl-T
+Show/copy TOTP, or reveal the stored secret on an MFA-secret row.
+.TP
+.B Ctrl-P
+Toggle pin.
+.TP
+.B Ctrl-F
+Toggle MFA-only mode.
+.TP
+.B Ctrl-O
+Open the interactive theme editor.
+.TP
+.B Ctrl-X
+Clear clipboard.
+.TP
+.B Ctrl-U
+Unpin all entries.
+.TP
+.B Ctrl-E
+Clear recents.
+.TP
+.B Ctrl-D
+Open doctor.
+.TP
+.B Ctrl-K
+Open local key list.
+.TP
+.B Esc / Ctrl-C / Ctrl-Q
+Quit.
+.SH ENVIRONMENT
+.TP
+.B PASSWORD_STORE_DIR
+Pass store root. Defaults to
+.IR ~/.password-store .
+.TP
+.B PASSAGE_STATE_DIR
+State directory override.
+.TP
+.B PASSAGE_PASS_BINARY
+Override the pass executable.
+.TP
+.B PASSAGE_THEME_FILE
+Theme config file.
+.TP
+.B PASSAGE_NO_COLOR, NO_COLOR
+Disable color.
+.TP
+.B PASSAGE_NO_OSC52
+Disable terminal OSC 52 clipboard fallback.
+.SH FILES
+.TP
+.I ~/.password-store
+Default GNU Pass store.
+.TP
+.I ~/.local/state/passage/state.json
+Default Linux state file.
+.TP
+.I ~/Library/Application Support/passage/state.json
+Default macOS state file.
+.SH SEE ALSO
+.BR pass (1),
+.BR gpg (1)
