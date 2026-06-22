@@ -36,6 +36,7 @@ type ThemeSaveFunc func(context.Context, ThemeEditorResult) (ThemeSaveResult, er
 
 type themeEditorModel struct {
 	values     map[termstyle.Role]string
+	base       string
 	cursor     int
 	noColor    bool
 	configPath string
@@ -81,8 +82,15 @@ func newThemeEditorModel(opts ThemeEditorOptions) themeEditorModel {
 			values[role] = strings.TrimSpace(code)
 		}
 	}
+	// Seed the base palette from the config, normalizing unknown names to the
+	// terminal default (BuiltinTheme("") already yields terminal).
+	base := "terminal"
+	if t, ok := termstyle.BuiltinTheme(opts.Config.BaseName); ok {
+		base = t.Name
+	}
 	return themeEditorModel{
 		values:     values,
+		base:       base,
 		noColor:    opts.NoColor,
 		configPath: opts.ConfigPath,
 		warning:    opts.Warning,
@@ -253,8 +261,9 @@ func (m themeEditorModel) renderBody(width int, theme pickerTheme) []string {
 
 func (m themeEditorModel) renderEditorLines(width int, theme pickerTheme) []string {
 	lines := []string{themeSectionHeader(theme, "Schema", width)}
+	lines = append(lines, m.renderBaseRow(width, theme))
 	for i, meta := range themeRoles {
-		lines = append(lines, m.renderRoleRow(i, meta, width, theme))
+		lines = append(lines, m.renderRoleRow(i+1, meta, width, theme))
 	}
 	if m.editMode {
 		lines = append(lines, "")
@@ -262,6 +271,23 @@ func (m themeEditorModel) renderEditorLines(width int, theme pickerTheme) []stri
 		lines = append(lines, theme.theme.Style(termstyle.RoleSearch, termstyle.Truncate(prompt, width)))
 	}
 	return lines
+}
+
+func (m themeEditorModel) renderBaseRow(width int, theme pickerTheme) string {
+	selected := m.cursor == 0
+	cursor := "  "
+	if selected {
+		cursor = ">>"
+	}
+	live := m.currentTheme()
+	line := theme.accent(cursor) + " " +
+		termstyle.PadRight(live.Style(termstyle.RoleTitle, "base"), 13) + " " +
+		termstyle.PadRight(live.Style(termstyle.RolePrimary, termstyle.Truncate(m.base, 18)), 18)
+	if width >= 54 {
+		hint := "starting palette (arrows switch)"
+		line += " " + m.plain(theme, termstyle.Truncate(hint, max(0, width-termstyle.VisibleWidth(line)-1)))
+	}
+	return termstyle.PadRight(line, width)
 }
 
 func (m themeEditorModel) renderRoleRow(index int, meta themeRoleMeta, width int, theme pickerTheme) string {
@@ -399,8 +425,9 @@ func (m themeEditorModel) result() ThemeEditorResult {
 
 func (m themeEditorModel) config() termstyle.ThemeConfig {
 	cfg := termstyle.ThemeConfig{
-		Codes: make(map[termstyle.Role]string),
-		Specs: make(map[termstyle.Role]string),
+		BaseName: m.base,
+		Codes:    make(map[termstyle.Role]string),
+		Specs:    make(map[termstyle.Role]string),
 	}
 	for _, meta := range themeRoles {
 		spec := strings.TrimSpace(m.values[meta.Role])
@@ -418,7 +445,7 @@ func (m themeEditorModel) config() termstyle.ThemeConfig {
 }
 
 func (m themeEditorModel) currentTheme() termstyle.Theme {
-	theme := termstyle.TerminalTheme().Normalized()
+	theme := m.baseTheme()
 	theme.NoColor = m.noColor
 	for _, meta := range themeRoles {
 		spec := strings.TrimSpace(m.values[meta.Role])
@@ -433,13 +460,29 @@ func (m themeEditorModel) currentTheme() termstyle.Theme {
 	return theme
 }
 
+// baseTheme is the selected starting palette, before role overrides.
+func (m themeEditorModel) baseTheme() termstyle.Theme {
+	if t, ok := termstyle.BuiltinTheme(m.base); ok {
+		return t.Normalized()
+	}
+	return termstyle.TerminalTheme().Normalized()
+}
+
+// The editor's selectable list is the base-palette selector (cursor 0)
+// followed by the role rows (cursor 1..len(themeRoles)).
+func (m themeEditorModel) rowCount() int { return len(themeRoles) + 1 }
+
 func (m *themeEditorModel) move(delta int) {
-	rows := len(themeRoles)
+	rows := m.rowCount()
 	m.cursor = (m.cursor + delta + rows) % rows
 	m.message = ""
 }
 
 func (m *themeEditorModel) cycleCurrent(delta int) {
+	if m.cursor == 0 {
+		m.cycleBase(delta)
+		return
+	}
 	role, ok := m.selectedRole()
 	if !ok {
 		return
@@ -451,9 +494,27 @@ func (m *themeEditorModel) cycleCurrent(delta int) {
 	m.message = string(role) + " = " + stylePresets[next].Label
 }
 
+// cycleBase steps the starting palette through the builtin themes; the role
+// overrides layered on top are untouched, so switching base re-tints only the
+// roles the user has not customized.
+func (m *themeEditorModel) cycleBase(delta int) {
+	names := termstyle.BuiltinThemeNames()
+	index := 0
+	for i, name := range names {
+		if name == m.base {
+			index = i
+			break
+		}
+	}
+	next := (index + delta + len(names)) % len(names)
+	m.base = names[next]
+	m.message = "base = " + m.base
+}
+
 func (m *themeEditorModel) startEdit() {
 	role, ok := m.selectedRole()
 	if !ok {
+		m.message = "base switches with left/right"
 		return
 	}
 	m.editMode = true
@@ -462,27 +523,39 @@ func (m *themeEditorModel) startEdit() {
 }
 
 func (m *themeEditorModel) clearCurrent() {
+	if m.cursor == 0 {
+		m.base = "terminal"
+		m.message = "base = terminal (default)"
+		return
+	}
 	if role, ok := m.selectedRole(); ok {
 		delete(m.values, role)
-		m.message = string(role) + " inherits from defaults"
+		m.message = string(role) + " inherits from base"
 	}
 }
 
 func (m *themeEditorModel) resetAll() {
 	m.values = make(map[termstyle.Role]string)
+	m.base = "terminal"
 	m.message = "reset to defaults"
 }
 
 func (m themeEditorModel) selectedRole() (termstyle.Role, bool) {
-	index := m.cursor
-	if index < 0 || index >= len(themeRoles) {
+	if m.cursor <= 0 {
+		return "", false // base-palette row
+	}
+	index := m.cursor - 1
+	if index >= len(themeRoles) {
 		return "", false
 	}
 	return themeRoles[index].Role, true
 }
 
 func (m themeEditorModel) selectedLabel() string {
-	index := m.cursor
+	if m.cursor == 0 {
+		return "base"
+	}
+	index := m.cursor - 1
 	if index < 0 || index >= len(themeRoles) {
 		return ""
 	}

@@ -765,7 +765,9 @@ func TestPickerCtrlOOpensThemeEditorAndSavesTheme(t *testing.T) {
 		t.Fatal("themeEditor = nil, want editor")
 	}
 
-	updated, _ = got.Update(themeKeyMsg("down")) // primary
+	updated, _ = got.Update(themeKeyMsg("down")) // base -> title
+	got = updated.(pickerModel)
+	updated, _ = got.Update(themeKeyMsg("down")) // title -> primary
 	got = updated.(pickerModel)
 	updated, _ = got.Update(themeKeyMsg("right")) // primary = default
 	got = updated.(pickerModel)
