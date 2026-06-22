@@ -289,6 +289,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.FocusMsg:
 		m.secretHidden = false
+	case tea.MouseWheelMsg:
+		return m.handleMouseWheel(msg.Mouse()), nil
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg.Mouse()), nil
 	case tickMsg:
 		m.tick++
 		m.refreshSecretCountdown()
@@ -438,7 +442,53 @@ func (m pickerModel) View() tea.View {
 	// when the user alt-tabs away.
 	view.ReportFocus = true
 	view.Cursor = m.filterCursor(spec, theme)
+	// Mouse is a progressive enhancement, enabled only in the alt-screen.
+	// In inline mode it would steal the terminal's own selection/scrollback.
+	if !m.noAltScreen {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	return view
+}
+
+// overlayActive reports whether a modal-like surface owns the keyboard.
+func (m pickerModel) overlayActive() bool {
+	return m.busy != nil || m.modal != nil || m.confirm != nil || m.help || m.themeEditor != nil
+}
+
+func (m pickerModel) handleMouseWheel(mouse tea.Mouse) pickerModel {
+	if m.overlayActive() {
+		return m
+	}
+	switch mouse.Button {
+	case tea.MouseWheelUp:
+		m.move(-1)
+	case tea.MouseWheelDown:
+		m.move(1)
+	}
+	return m
+}
+
+func (m pickerModel) handleMouseClick(mouse tea.Mouse) pickerModel {
+	if m.overlayActive() || mouse.Button != tea.MouseLeft {
+		return m
+	}
+	spec := m.computeLayout(pickerTheme{theme: m.theme})
+	start := clamp(m.scroll, 0, max(0, len(m.filtered)-spec.listHeight))
+	firstEntryY := 1 + len(spec.header) // top border + header rows
+	if start > 0 {
+		firstEntryY++ // "... N more above" line
+	}
+	row := mouse.Y - firstEntryY
+	if row < 0 {
+		return m
+	}
+	idx := start + row
+	if idx >= len(m.filtered) || idx >= start+spec.listHeight {
+		return m
+	}
+	m.cursor = idx
+	m.ensureVisible()
+	return m
 }
 
 // filterCursor places a real beam cursor at the end of the filter field. It
@@ -446,7 +496,7 @@ func (m pickerModel) View() tea.View {
 // help / theme editor) so the cursor never blinks on a revealed secret or
 // where typing does not go.
 func (m pickerModel) filterCursor(spec layoutSpec, theme pickerTheme) *tea.Cursor {
-	if m.busy != nil || m.modal != nil || m.confirm != nil || m.help || m.themeEditor != nil {
+	if m.overlayActive() {
 		return nil
 	}
 	counter := theme.counter(len(m.filtered), len(m.entries))

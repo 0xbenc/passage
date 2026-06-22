@@ -201,6 +201,45 @@ func TestFilterCursorTracksQueryAndHidesOverModal(t *testing.T) {
 	}
 }
 
+func TestMouseWheelMovesCursor(t *testing.T) {
+	model := newPickerModel(manyEntries(30), PickOptions{}, termstyle.TerminalTheme())
+	model.width = 80
+	model.height = 20
+	model.cursor = 5
+
+	down, _ := model.Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelDown}))
+	if got := down.(pickerModel).cursor; got != 6 {
+		t.Fatalf("wheel down cursor = %d, want 6", got)
+	}
+	up, _ := down.(pickerModel).Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelUp}))
+	if got := up.(pickerModel).cursor; got != 5 {
+		t.Fatalf("wheel up cursor = %d, want 5", got)
+	}
+}
+
+func TestMouseClickSelectsRow(t *testing.T) {
+	model := newPickerModel(manyEntries(30), PickOptions{}, termstyle.TerminalTheme())
+	model.width = 80
+	model.height = 24
+	model.cursor = 0
+	// With no message, the first entry row is at Y = 1 (border) + 2 (header).
+	// Clicking three rows down selects entry index 3.
+	clicked, _ := model.Update(tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, Y: 1 + 2 + 3}))
+	if got := clicked.(pickerModel).cursor; got != 3 {
+		t.Fatalf("click selected cursor = %d, want 3", got)
+	}
+}
+
+func TestMouseSuppressedDuringOverlay(t *testing.T) {
+	model := newPickerModel(manyEntries(30), PickOptions{}, termstyle.TerminalTheme())
+	model.cursor = 5
+	model.confirm = &pickerConfirm{action: ActionClearPins, prompt: "Clear all pins?"}
+	moved, _ := model.Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelDown}))
+	if got := moved.(pickerModel).cursor; got != 5 {
+		t.Fatalf("mouse must be ignored during an overlay; cursor = %d, want 5", got)
+	}
+}
+
 func TestQuestionMarkOpensHelpOverlay(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "alpha", Display: "alpha"},
