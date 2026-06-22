@@ -299,20 +299,51 @@ func (m pickerModel) View() tea.View {
 		view.AltScreen = !m.noAltScreen
 		return view
 	}
+	theme := pickerTheme{theme: m.theme}
+	spec := m.computeLayout(theme)
+	body := append([]string{}, spec.header...)
+	body = append(body, m.listLines(spec.bodyWidth, theme, spec.listHeight)...)
+	body = append(body, spec.tail...)
+	view := tea.NewView(renderWorkflowShell(theme, spec.width, workflowShell{
+		Title:  m.titleLine(),
+		Body:   body,
+		Footer: spec.footer,
+	}))
+	view.AltScreen = !m.noAltScreen
+	return view
+}
+
+// layoutSpec is the single per-frame geometry budget. The picker computes it
+// once in View, and the scroll math (pageSize / ensureVisible) derives the
+// list height from the same source — so the height used to place the cursor
+// can never drift from the height actually rendered. Previously three
+// independent budgeters (View's availableListLines, pageSize, and the raw
+// structural-line count) could disagree whenever a message or a busy/modal
+// box was on screen, scrolling as if the list were two rows taller than it
+// was.
+type layoutSpec struct {
+	width      int
+	bodyWidth  int
+	footer     string
+	header     []string // lines above the list (message, status, filter)
+	tail       []string // lines below the list (busy / modal boxes)
+	listHeight int      // rows available for the entry list
+}
+
+func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
+	width := max(48, m.width)
 	footer := pickerFooterText()
 	bodyWidth := max(20, width-4)
-	theme := pickerTheme{theme: m.theme}
-	body := []string{}
+	var header []string
 	if m.message != "" {
 		line := theme.success(termstyle.Truncate(m.message, bodyWidth))
 		if m.messageErr {
 			line = theme.warning(termstyle.Truncate(m.message, bodyWidth))
 		}
-		body = append(body, line, "")
+		header = append(header, line, "")
 	}
-	body = append(body, m.statusLine(bodyWidth, theme))
-	body = append(body, m.filterLine(bodyWidth, theme))
-	tail := []string{}
+	header = append(header, m.statusLine(bodyWidth, theme), m.filterLine(bodyWidth, theme))
+	var tail []string
 	if m.busy != nil {
 		tail = append(tail, "")
 		tail = append(tail, m.busyLines(bodyWidth, theme)...)
@@ -321,16 +352,15 @@ func (m pickerModel) View() tea.View {
 		tail = append(tail, "")
 		tail = append(tail, m.modalLines(bodyWidth, theme)...)
 	}
-	availableListLines := m.height - pickerShellStructuralLines(footer) - len(body) - len(tail)
-	body = append(body, m.listLines(bodyWidth, theme, availableListLines)...)
-	body = append(body, tail...)
-	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
-		Title:  m.titleLine(),
-		Body:   body,
-		Footer: footer,
-	}))
-	view.AltScreen = !m.noAltScreen
-	return view
+	listHeight := max(1, m.height-pickerShellStructuralLines(footer)-len(header)-len(tail))
+	return layoutSpec{
+		width:      width,
+		bodyWidth:  bodyWidth,
+		footer:     footer,
+		header:     header,
+		tail:       tail,
+		listHeight: listHeight,
+	}
 }
 
 func (m pickerModel) titleLine() string {
@@ -391,7 +421,7 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 		}
 		return []string{theme.warning("No entries match.")}
 	}
-	start := m.normalizedScroll()
+	start := clamp(m.scroll, 0, max(0, len(m.filtered)-available))
 	entrySlots := available
 	if start > 0 && entrySlots > 1 {
 		entrySlots--
@@ -512,17 +542,11 @@ func (m *pickerModel) ensureVisible() {
 	}
 }
 
-func (m pickerModel) normalizedScroll() int {
-	if len(m.filtered) == 0 {
-		return 0
-	}
-	page := m.pageSize()
-	maxStart := max(0, len(m.filtered)-page)
-	return clamp(m.scroll, 0, maxStart)
-}
-
+// pageSize is the number of entry rows currently visible — the real list
+// height from computeLayout, so paging and the scroll window stay in lockstep
+// with what View renders even when a message or busy/modal box is shown.
 func (m pickerModel) pageSize() int {
-	return max(5, m.height-pickerShellStructuralLines(pickerFooterText())-2)
+	return m.computeLayout(pickerTheme{theme: m.theme}).listHeight
 }
 
 func (m pickerModel) trigger(action Action) (pickerModel, tea.Cmd) {

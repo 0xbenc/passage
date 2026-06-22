@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +12,57 @@ import (
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
 )
+
+func manyEntries(n int) []passstore.Entry {
+	entries := make([]passstore.Entry, n)
+	for i := range entries {
+		name := fmt.Sprintf("entry-%03d", i)
+		entries[i] = passstore.Entry{Path: name, Display: name}
+	}
+	return entries
+}
+
+// TestPickerPageSizeTracksListHeight pins the C6 invariant: pageSize is the
+// real rendered list height. A message (which adds two header rows) shrinks
+// the page by exactly two — the drift the old estimate ignored.
+func TestPickerPageSizeTracksListHeight(t *testing.T) {
+	model := newPickerModel(manyEntries(50), PickOptions{}, termstyle.TerminalTheme())
+	model.width = 80
+	model.height = 20
+
+	wantPage := 20 - pickerShellStructuralLines(pickerFooterText()) - 2
+	if got := model.pageSize(); got != wantPage {
+		t.Fatalf("pageSize = %d, want %d", got, wantPage)
+	}
+
+	model.message = "copied work/github"
+	if got := model.pageSize(); got != wantPage-2 {
+		t.Fatalf("pageSize with message = %d, want %d (message must cost two rows)", got, wantPage-2)
+	}
+}
+
+// TestPickerScrollKeepsCursorVisible drives ensureVisible across the list and
+// asserts the cursor stays inside the scroll window and the rendered list
+// never exceeds the page budget.
+func TestPickerScrollKeepsCursorVisible(t *testing.T) {
+	model := newPickerModel(manyEntries(50), PickOptions{}, termstyle.TerminalTheme())
+	model.width = 80
+	model.height = 20
+
+	theme := pickerTheme{theme: model.theme}
+	for _, cursor := range []int{0, 7, 25, 49, 12} {
+		model.cursor = cursor
+		model.ensureVisible()
+		page := model.pageSize()
+		if model.cursor < model.scroll || model.cursor >= model.scroll+page {
+			t.Fatalf("cursor %d not within scroll window [%d,%d)", model.cursor, model.scroll, model.scroll+page)
+		}
+		lines := model.listLines(model.computeLayout(theme).bodyWidth, theme, page)
+		if len(lines) > page {
+			t.Fatalf("cursor %d: rendered %d list lines, exceeds page %d", cursor, len(lines), page)
+		}
+	}
+}
 
 func TestPickerLegacyArrowSequencesDoNotEnterFilter(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
