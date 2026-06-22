@@ -47,6 +47,7 @@ type PickOptions struct {
 	ThemePath    string
 	ThemeWarning string
 	SaveTheme    ThemeSaveFunc
+	Glyphs       termstyle.GlyphSet
 }
 
 type PickResult struct {
@@ -144,6 +145,7 @@ type pickerModel struct {
 	themeWarning string
 	saveTheme    ThemeSaveFunc
 	themeEditor  *themeEditorModel
+	glyphs       termstyle.GlyphSet
 }
 
 type pickerBusy struct {
@@ -198,6 +200,10 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		themePath:    opts.ThemePath,
 		themeWarning: opts.ThemeWarning,
 		saveTheme:    opts.SaveTheme,
+		glyphs:       opts.Glyphs,
+	}
+	if len(model.glyphs.Spinner) == 0 {
+		model.glyphs = termstyle.DefaultGlyphs()
 	}
 	model.applyFilter()
 	return model

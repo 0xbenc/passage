@@ -268,6 +268,7 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		Filter:       filter,
 		MFAOnly:      mfaOnly,
 		NoAltScreen:  flags.noAltScreen,
+		Glyphs:       termstyle.ResolveGlyphs(r.env),
 		ThemeConfig:  themeConfig,
 		ThemePath:    themePath,
 		ThemeWarning: themeWarning,

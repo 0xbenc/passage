@@ -212,16 +212,24 @@ func PadRight(value string, width int) string {
 // styling active a reset is appended so styling cannot leak past the
 // truncation.
 func Truncate(value string, width int) string {
+	return TruncateWith(value, width, "~")
+}
+
+// TruncateWith is Truncate with a caller-chosen cut marker (which may be empty
+// or multi-cell). The marker's own width is reserved from the budget, so the
+// result never exceeds width cells. Used where the marker should follow the
+// active GlyphSet rather than the hard-coded "~".
+func TruncateWith(value string, width int, marker string) string {
 	if width <= 0 {
 		return ""
 	}
 	if VisibleWidth(value) <= width {
 		return value
 	}
-	keep := width - 1
-	marker := "~"
-	if width == 1 {
-		keep = 1
+	markerW := VisibleWidth(marker)
+	keep := width - markerW
+	if keep < 1 {
+		keep = width
 		marker = ""
 	}
 	var b strings.Builder
