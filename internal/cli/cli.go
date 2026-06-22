@@ -229,6 +229,9 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 	passstore.SetupGPGTTY(ctx, r.env)
 	rt, err := r.loadInteractive(flags)
 	if err != nil {
+		if r.firstRunGuidance(flags) {
+			return 1
+		}
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
 	}
@@ -288,6 +291,33 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		return 1
 	}
 	return 0
+}
+
+// firstRunGuidance turns the most common first-run failure — no password store
+// yet — into guided onboarding with an environment check, instead of a terse
+// "directory does not exist". It returns true when it handled the case.
+func (r runner) firstRunGuidance(flags commonFlags) bool {
+	storeDir, err := r.storeDir(flags)
+	if err != nil {
+		return false
+	}
+	if info, statErr := os.Stat(storeDir); statErr == nil && info.IsDir() {
+		return false // the store exists; the error is something else
+	}
+	fmt.Fprintf(r.stderr, "No password store found at %s\n\n", storeDir)
+	fmt.Fprintln(r.stderr, "passage reads your real GNU Pass store. To get started:")
+	fmt.Fprintln(r.stderr, "")
+	fmt.Fprintln(r.stderr, "  1. Install pass and gpg (e.g. brew install pass, apt install pass)")
+	fmt.Fprintln(r.stderr, "  2. Create a GPG key:      gpg --full-generate-key")
+	fmt.Fprintln(r.stderr, "  3. Initialize the store:  pass init <your-gpg-id>")
+	fmt.Fprintln(r.stderr, "  4. Add an entry:          pass insert work/github")
+	fmt.Fprintln(r.stderr, "")
+	fmt.Fprintln(r.stderr, "Environment check:")
+	report := gpgdiag.New(storeDir).Doctor(context.Background())
+	for _, line := range doctorLines(report) {
+		fmt.Fprintln(r.stderr, "  "+line)
+	}
+	return true
 }
 
 // runAutoAction performs the default action for a single filtered entry without

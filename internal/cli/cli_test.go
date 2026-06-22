@@ -9,6 +9,24 @@ import (
 	"testing"
 )
 
+func TestFirstRunGuidanceForMissingStore(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-store-here")
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--store-dir", missing, "--state-dir", t.TempDir()}, &stdout, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("Run = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{"No password store found", "pass init", "Environment check"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("first-run guidance missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "passage: password store directory") {
+		t.Fatalf("first-run should replace the raw error, not append it:\n%s", out)
+	}
+}
+
 func TestRunListJSON(t *testing.T) {
 	store := fakeStore(t)
 	var stdout, stderr bytes.Buffer
