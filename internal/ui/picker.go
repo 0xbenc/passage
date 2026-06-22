@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -427,9 +428,13 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 	}
 	var header []string
 	if m.message != "" {
-		line := theme.success(termstyle.Truncate(m.message, bodyWidth))
+		// Sanitize: an error message can carry an entry path from an
+		// unsanitized filesystem walk, which would otherwise reach the
+		// terminal through Truncate (escape-aware but not C1-stripping).
+		msg := termstyle.Sanitize(m.message)
+		line := theme.success(termstyle.Truncate(msg, bodyWidth))
 		if m.messageErr {
-			line = theme.warning(termstyle.Truncate(m.message, bodyWidth))
+			line = theme.warning(termstyle.Truncate(msg, bodyWidth))
 		}
 		header = append(header, line, "")
 	}
@@ -494,8 +499,11 @@ func (m pickerModel) statusLine(width int, theme pickerTheme) string {
 }
 
 func (m pickerModel) filterLine(width int, theme pickerTheme) string {
-	query := m.query
-	if query == "" {
+	// Sanitize defensively: safeTextInput already keeps control bytes out of
+	// the query, but the field must never be the path a stray control byte
+	// reaches the terminal.
+	query := termstyle.Sanitize(m.query)
+	if m.query == "" {
 		query = "filter"
 	}
 	counter := theme.counter(len(m.filtered), len(m.entries))
@@ -513,10 +521,7 @@ func (m pickerModel) filterLine(width int, theme pickerTheme) string {
 func (m pickerModel) listLines(width int, theme pickerTheme, available int) []string {
 	available = max(1, available)
 	if len(m.filtered) == 0 {
-		if m.mfaOnly {
-			return []string{theme.warning("No MFA-capable entries match.")}
-		}
-		return []string{theme.warning("No entries match.")}
+		return clampLines(m.emptyStateLines(theme), available)
 	}
 	start := clamp(m.scroll, 0, max(0, len(m.filtered)-available))
 	entrySlots := available
@@ -539,6 +544,49 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 	}
 	if end < len(m.filtered) {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more below", len(m.filtered)-end)))
+	}
+	return lines
+}
+
+// emptyStateLines distinguishes a genuinely empty store (a first-run welcome
+// with the next step) from a filter that matched nothing (which echoes the
+// sanitized query and how to widen it). The query is Sanitized because it is
+// user-influenced text re-entering the render.
+func (m pickerModel) emptyStateLines(theme pickerTheme) []string {
+	if len(m.entries) == 0 {
+		if m.mfaOnly {
+			return []string{
+				theme.warning("No MFA-capable entries in this store."),
+				"",
+				theme.muted("MFA entries live at  entry/mfa  in your pass store."),
+			}
+		}
+		return []string{
+			theme.primary("Your password store is empty."),
+			"",
+			theme.muted("Add one with:  pass insert work/github"),
+			theme.muted("then reopen passage."),
+		}
+	}
+	query := termstyle.Sanitize(strings.TrimSpace(m.query))
+	subject := "entries"
+	if m.mfaOnly {
+		subject = "MFA-capable entries"
+	}
+	if query == "" {
+		return []string{theme.warning("No " + subject + ".")}
+	}
+	lines := []string{theme.warning("No " + subject + " match " + strconv.Quote(query) + ".")}
+	hint := "Backspace to widen the filter."
+	if m.mfaOnly {
+		hint = "Backspace to widen, or ^F to show all entries."
+	}
+	return append(lines, "", theme.muted(hint))
+}
+
+func clampLines(lines []string, limit int) []string {
+	if len(lines) > limit {
+		return lines[:limit]
 	}
 	return lines
 }

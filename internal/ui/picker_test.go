@@ -211,6 +211,47 @@ func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
 	}
 }
 
+func TestEmptyVaultShowsWelcome(t *testing.T) {
+	model := newPickerModel(nil, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 70
+	model.height = 16
+	text := termstyle.Strip(model.View().Content)
+	if !strings.Contains(text, "store is empty") {
+		t.Fatalf("empty vault should show a welcome:\n%s", text)
+	}
+	if !strings.Contains(text, "pass insert") {
+		t.Fatalf("welcome should show the next step:\n%s", text)
+	}
+}
+
+func TestZeroMatchEchoesSanitizedQuery(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 70
+	model.height = 16
+	// A query with an embedded control byte must be sanitized before it is
+	// echoed back into the empty-state.
+	model.query = "zzz\x1b[31mX"
+	model.applyFilter()
+	text := model.View().Content
+	if strings.Contains(text, "\x1b[31m") {
+		t.Fatalf("zero-match echo must sanitize control bytes from the query:\n%q", text)
+	}
+	if !strings.Contains(text, "No entries match") {
+		t.Fatalf("zero-match should report no matches:\n%s", text)
+	}
+}
+
+func TestEmptyStateClampedToBudget(t *testing.T) {
+	model := newPickerModel(nil, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	theme := pickerTheme{theme: model.theme}
+	lines := model.listLines(60, theme, 2)
+	if len(lines) > 2 {
+		t.Fatalf("empty state must clamp to the available budget, got %d lines", len(lines))
+	}
+}
+
 func TestSelectedRowIsFilledBar(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "work/github", Display: passstore.Display("work/github"), Pinned: true, HasMFA: true, LastUsed: 1},
