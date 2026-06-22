@@ -605,6 +605,58 @@ func TestBusyBoxShowsSpinnerAndElapsed(t *testing.T) {
 	}
 }
 
+// TestTotpCountdownRecomputesAndAutoDismisses pins C10: a TOTP secret modal
+// recomputes remaining from the wall clock on each tick and dismisses itself
+// when the window elapses; a password reveal gets no countdown.
+func TestTotpCountdownRecomputesAndAutoDismisses(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "work/github/mfa", Display: "work | github | mfa", HasMFA: true},
+	}, PickOptions{Glyphs: termstyle.ASCIIGlyphs()}, termstyle.TerminalTheme().WithNoColor(true))
+	base := time.Unix(2000, 0)
+	cur := base
+	model.clock = func() time.Time { return cur }
+
+	model.applyOutcome(0, ActionOutcome{
+		SecretTitle: "TOTP", SecretKind: "totp", Secret: "123 456",
+		SecretRemaining: 8, SecretPeriod: 30,
+	})
+	if model.modal == nil || model.modal.expires.IsZero() {
+		t.Fatal("totp outcome should create a live countdown modal")
+	}
+	if model.modal.remaining != 8 {
+		t.Fatalf("initial remaining = %d, want 8", model.modal.remaining)
+	}
+
+	// 5s later, remaining recomputes to ~3.
+	cur = base.Add(5 * time.Second)
+	model.refreshSecretCountdown()
+	if model.modal == nil || model.modal.remaining != 3 {
+		t.Fatalf("remaining after 5s = %v, want 3", model.modal)
+	}
+
+	// Past expiry, the modal auto-dismisses.
+	cur = base.Add(9 * time.Second)
+	model.refreshSecretCountdown()
+	if model.modal != nil {
+		t.Fatal("modal should auto-dismiss when the TOTP window elapses")
+	}
+}
+
+func TestPasswordRevealHasNoCountdown(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.applyOutcome(0, ActionOutcome{
+		SecretKind: "password", Secret: "hunter2", SecretRemaining: 0,
+	})
+	if model.modal == nil {
+		t.Fatal("password reveal should create a modal")
+	}
+	if !model.modal.expires.IsZero() {
+		t.Fatal("password reveal must not have a countdown")
+	}
+}
+
 // TestPickerTickGatedToLiveState pins the C9 contract: a tickMsg keeps the
 // loop alive only while a busy action or live secret countdown is on screen,
 // and stops (returns a nil command) the instant neither is.

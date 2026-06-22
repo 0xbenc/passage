@@ -905,6 +905,7 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 			SecretKind:      "totp",
 			Secret:          code.Pretty,
 			SecretRemaining: code.Remaining,
+			SecretPeriod:    code.Period,
 		}
 	default:
 		return ui.ActionOutcome{Err: fmt.Errorf("unsupported action %q", req.Action)}

@@ -71,6 +71,7 @@ type ActionOutcome struct {
 	SecretKind      string
 	Secret          string
 	SecretRemaining int
+	SecretPeriod    int
 	TextTitle       string
 	TextLines       []string
 	Err             error
@@ -168,6 +169,12 @@ type pickerModal struct {
 	offset    int
 	secret    bool
 	remaining int
+	// expires/period drive the live countdown (TOTP only). When expires is
+	// non-zero, remaining is recomputed from the wall clock each tick so the
+	// bar tracks real OTP validity rather than a blind decrement, and the
+	// modal auto-dismisses at zero.
+	expires time.Time
+	period  int
 }
 
 type actionDoneMsg struct {
@@ -240,11 +247,12 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.ensureVisible()
 	case tickMsg:
+		m.tick++
+		m.refreshSecretCountdown()
 		if !m.tickActive() {
 			m.ticking = false
 			return m, nil
 		}
-		m.tick++
 		return m, tickCmd()
 	case actionDoneMsg:
 		m.applyOutcome(msg.id, msg.outcome)
@@ -917,10 +925,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 	}
 	if out.Secret != "" {
 		lines := wrapSecret(out.Secret, max(20, m.width-8))
-		if out.SecretRemaining > 0 {
-			lines = append(lines, "", fmt.Sprintf("%ds remaining", out.SecretRemaining))
-		}
-		m.modal = &pickerModal{
+		modal := &pickerModal{
 			title:     defaultString(out.SecretTitle, "Reveal"),
 			lines:     lines,
 			footer:    "press any key to return",
@@ -928,6 +933,17 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 			secret:    true,
 			remaining: out.SecretRemaining,
 		}
+		// Only a TOTP carries a real validity window, so only it gets a live
+		// countdown. A standalone password reveal has no meaningful timer.
+		if out.SecretKind == "totp" && out.SecretRemaining > 0 {
+			period := out.SecretPeriod
+			if period <= 0 {
+				period = out.SecretRemaining
+			}
+			modal.period = period
+			modal.expires = m.now().Add(time.Duration(out.SecretRemaining) * time.Second)
+		}
+		m.modal = modal
 	}
 	if len(out.TextLines) > 0 {
 		m.modal = &pickerModal{
@@ -937,6 +953,22 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 			scroll: true,
 		}
 	}
+}
+
+// refreshSecretCountdown recomputes a live secret modal's remaining seconds
+// from the wall clock and dismisses the modal when the window has elapsed.
+// Recomputing (rather than decrementing a counter) keeps the bar honest across
+// a suspend/resume and never disagrees with the real OTP validity.
+func (m *pickerModel) refreshSecretCountdown() {
+	if m.modal == nil || m.modal.expires.IsZero() {
+		return
+	}
+	d := m.modal.expires.Sub(m.now())
+	if d <= 0 {
+		m.modal = nil
+		return
+	}
+	m.modal.remaining = int((d + time.Second - 1) / time.Second) // ceil to seconds
 }
 
 func (m pickerModel) selectedEntry() (passstore.Entry, bool) {
@@ -1005,12 +1037,28 @@ func (m pickerModel) modalLines(width int, theme pickerTheme) []string {
 		}
 		lines = body
 	}
+	if !modal.expires.IsZero() && modal.remaining > 0 {
+		lines = append(append([]string(nil), lines...), "", m.countdownLine(theme))
+	}
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  modal.title,
 		Body:   lines,
 		Footer: modal.footer,
 		Danger: modal.danger,
 	}))
+}
+
+// countdownLine renders the live "Ns ▰▰▰▱▱" bar for a secret modal, colored by
+// urgency (success -> warning -> danger) as the window drains.
+func (m pickerModel) countdownLine(theme pickerTheme) string {
+	remaining := m.modal.remaining
+	total := m.modal.period
+	if total <= 0 {
+		total = remaining
+	}
+	role := termstyle.UrgencyRole(remaining, total)
+	bar := m.glyphs.Bar(remaining, total, 14)
+	return theme.style(role, fmt.Sprintf("%2ds ", remaining)+bar)
 }
 
 func (m pickerModel) modalPageSize() int {

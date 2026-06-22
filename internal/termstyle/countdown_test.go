@@ -16,10 +16,10 @@ func TestBarFillsProportionally(t *testing.T) {
 		{5, 10, 10, "#####-----"},
 		{30, 30, 10, "##########"},
 		{15, 30, 8, "####----"},
-		{-3, 10, 4, "----"},   // clamped low
-		{99, 10, 4, "####"},   // clamped high
-		{5, 0, 4, "----"},     // total<=0 -> empty
-		{5, 10, 0, ""},        // width<1 -> empty string
+		{-3, 10, 4, "----"}, // clamped low
+		{99, 10, 4, "####"}, // clamped high
+		{5, 0, 4, "----"},   // total<=0 -> empty
+		{5, 10, 0, ""},      // width<1 -> empty string
 	}
 	for _, tc := range cases {
 		got := g.Bar(tc.remaining, tc.total, tc.width)
