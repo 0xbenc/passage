@@ -409,10 +409,9 @@ func TestPickerRunnerActionStaysInPickerAndShowsMessage(t *testing.T) {
 		t.Fatal("cmd = nil, want action command")
 	}
 
-	msg := cmd()
-	done, ok := msg.(actionDoneMsg)
+	done, ok := actionDoneFromCmd(cmd)
 	if !ok {
-		t.Fatalf("cmd returned %T, want actionDoneMsg", msg)
+		t.Fatalf("cmd did not yield an actionDoneMsg")
 	}
 	updated, _ = got.Update(done)
 	got = updated.(pickerModel)
@@ -436,7 +435,8 @@ func TestPickerRunnerActionErrorReturnsToPicker(t *testing.T) {
 
 	updated, cmd := model.Update(ctrlKey('y'))
 	got := updated.(pickerModel)
-	updated, _ = got.Update(cmd())
+	done, _ := actionDoneFromCmd(cmd)
+	updated, _ = got.Update(done)
 	got = updated.(pickerModel)
 
 	if got.busy != nil {
@@ -474,7 +474,8 @@ func TestPickerBusyCancelReturnsImmediatelyAndIgnoresLateResult(t *testing.T) {
 		t.Fatalf("message = %q err=%v, want canceled/true", got.message, got.messageErr)
 	}
 
-	updated, _ = got.Update(cmd())
+	lateDone, _ := actionDoneFromCmd(cmd)
+	updated, _ = got.Update(lateDone)
 	got = updated.(pickerModel)
 	if got.message != "Canceled alpha." {
 		t.Fatalf("late result changed message to %q", got.message)
@@ -556,4 +557,57 @@ func TestPickerCtrlOOpensThemeEditorAndSavesTheme(t *testing.T) {
 
 func ctrlKey(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: r, Mod: tea.ModCtrl})
+}
+
+// actionDoneFromCmd extracts the actionDoneMsg from a start-action command,
+// which is batched with the (blocking) tick command. The action command is
+// always first in the batch, so this returns without waiting on the tick.
+func actionDoneFromCmd(cmd tea.Cmd) (actionDoneMsg, bool) {
+	if cmd == nil {
+		return actionDoneMsg{}, false
+	}
+	switch msg := cmd().(type) {
+	case actionDoneMsg:
+		return msg, true
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if c == nil {
+				continue
+			}
+			if done, ok := c().(actionDoneMsg); ok {
+				return done, true
+			}
+		}
+	}
+	return actionDoneMsg{}, false
+}
+
+// TestPickerTickGatedToLiveState pins the C9 contract: a tickMsg keeps the
+// loop alive only while a busy action or live secret countdown is on screen,
+// and stops (returns a nil command) the instant neither is.
+func TestPickerTickGatedToLiveState(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+
+	// Idle: a stray tick must not perpetuate the loop.
+	updated, cmd := model.Update(tickMsg{})
+	if cmd != nil {
+		t.Fatal("idle tick returned a command; loop must stop when nothing is live")
+	}
+	got := updated.(pickerModel)
+	if got.ticking {
+		t.Fatal("idle tick left ticking set")
+	}
+
+	// Busy: tick re-issues and advances the frame.
+	got.busy = &pickerBusy{title: "copying"}
+	updated, cmd = got.Update(tickMsg{})
+	got = updated.(pickerModel)
+	if cmd == nil {
+		t.Fatal("busy tick must re-issue the clock")
+	}
+	if got.tick == 0 {
+		t.Fatal("busy tick must advance the frame counter")
+	}
 }

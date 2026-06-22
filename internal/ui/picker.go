@@ -140,6 +140,8 @@ type pickerModel struct {
 	modal        *pickerModal
 	actionSeq    int
 	activeID     int
+	tick         int  // animation frame counter, advanced by tickMsg
+	ticking      bool // whether a tick loop is currently in flight
 	themeConfig  termstyle.ThemeConfig
 	themePath    string
 	themeWarning string
@@ -154,6 +156,7 @@ type pickerBusy struct {
 	detail    string
 	cancel    context.CancelFunc
 	canceling bool
+	started   time.Time
 }
 
 type pickerModal struct {
@@ -171,6 +174,19 @@ type actionDoneMsg struct {
 	id      int
 	request ActionRequest
 	outcome ActionOutcome
+}
+
+// tickMsg drives motion (the busy spinner and the secret countdown). It is a
+// distinct message type, not a KeyPressMsg, so it never dismisses the secret
+// modal. The clock is gated: it runs only while a busy action or a live secret
+// countdown is on screen, re-issued each tick and stopped the instant neither
+// is — so an idle picker never redraws, with no goroutines or leaked timers.
+type tickMsg struct{ at time.Time }
+
+const tickInterval = 100 * time.Millisecond
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg{at: t} })
 }
 
 type themeSaveDoneMsg struct {
@@ -223,8 +239,16 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 		m.ensureVisible()
+	case tickMsg:
+		if !m.tickActive() {
+			m.ticking = false
+			return m, nil
+		}
+		m.tick++
+		return m, tickCmd()
 	case actionDoneMsg:
 		m.applyOutcome(msg.id, msg.outcome)
+		return m, m.maybeStartTick()
 	case themeSaveDoneMsg:
 		m.applyThemeSave(msg)
 	case tea.KeyPressMsg:
@@ -681,6 +705,26 @@ func (m pickerModel) pageSize() int {
 	return m.computeLayout(pickerTheme{theme: m.theme}).listHeight
 }
 
+// tickActive reports whether motion should keep running: a busy action is in
+// flight, or a secret countdown is still on screen with time left.
+func (m pickerModel) tickActive() bool {
+	if m.busy != nil {
+		return true
+	}
+	return m.modal != nil && m.modal.secret && m.modal.remaining > 0
+}
+
+// maybeStartTick starts the tick loop if motion is needed and no loop is
+// already running, returning the command to issue (or nil). Returning nil when
+// already ticking is what keeps the loop single — never double-speed.
+func (m *pickerModel) maybeStartTick() tea.Cmd {
+	if m.tickActive() && !m.ticking {
+		m.ticking = true
+		return tickCmd()
+	}
+	return nil
+}
+
 func (m pickerModel) trigger(action Action) (pickerModel, tea.Cmd) {
 	if m.runAction == nil {
 		switch action {
@@ -715,14 +759,16 @@ func (m pickerModel) startAction(action Action) (pickerModel, tea.Cmd) {
 	m.messageErr = false
 	m.modal = nil
 	m.busy = &pickerBusy{
-		id:     id,
-		title:  actionBusyTitle(action),
-		detail: entry.Path,
-		cancel: cancel,
+		id:      id,
+		title:   actionBusyTitle(action),
+		detail:  entry.Path,
+		cancel:  cancel,
+		started: m.now(),
 	}
-	return m, func() tea.Msg {
+	actionCmd := func() tea.Msg {
 		return actionDoneMsg{id: id, request: req, outcome: m.runAction(actionCtx, req)}
 	}
+	return m, tea.Batch(actionCmd, m.maybeStartTick())
 }
 
 func (m pickerModel) updateBusy(key string) (pickerModel, tea.Cmd) {
