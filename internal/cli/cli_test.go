@@ -269,3 +269,44 @@ func TestThemeExportImportRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// ssherpaThemeFixture is a theme exported by ssherpa: 15 roles, no selected_bar
+// (ssherpa paints no selection bar).
+const ssherpaThemeFixture = `# termtheme v1
+# source = ssherpa 0.4.0
+format = 1
+theme = vivid
+primary = 1;38;2;96;221;255
+danger = 1;38;2;255;151;112
+`
+
+// TestThemeImportFromSsherpaFillsMissingRole is the reverse cross-app contract:
+// passage imports an ssherpa .theme that omits selected_bar; the import
+// succeeds and passage fills the missing role from its own builtin base
+// (fail-open), so the role passage paints is never blank.
+func TestThemeImportFromSsherpaFillsMissingRole(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "ssherpa.theme")
+	if err := os.WriteFile(src, []byte(ssherpaThemeFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	dest := filepath.Join(dir, "theme.conf")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"theme", "import", "--theme-file", dest, src}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("import = %d; stderr=%s", code, stderr.String())
+	}
+	// The written config carries the base + the roles ssherpa exported, and no
+	// selected_bar line (it was absent).
+	got, _ := os.ReadFile(dest)
+	if !strings.Contains(string(got), "theme = vivid") {
+		t.Fatalf("imported config missing base:\n%s", got)
+	}
+	// passage still resolves selected_bar from its own vivid base (fail-open).
+	theme, err := termstyle.ResolveTheme(termstyle.ThemeOptions{File: dest, Env: []string{}, SkipDefaultFile: true})
+	if err != nil {
+		t.Fatalf("resolve imported: %v", err)
+	}
+	if got := theme.Style(termstyle.RoleSelectedBar, "x"); got == "x" {
+		t.Fatalf("selected_bar rendered plain; should be filled from passage's vivid base")
+	}
+}
