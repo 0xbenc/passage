@@ -72,10 +72,17 @@ const doctorUsage = `Usage:
 
 const themeUsage = `Usage:
   passage theme [--theme-file PATH] [--no-color] [--no-alt-screen]
+  passage theme export PATH
+  passage theme import PATH
 
 Open the theme builder. Pick a base palette (terminal or vivid) on the
 top row, tune individual roles below, preview live, then press s to save.
 The same builder is reachable from the homepage with Ctrl-O.
+
+  export PATH  Write the active theme to a portable .theme file that any
+               termtheme-based app (e.g. ssherpa) can import.
+  import PATH  Replace the active theme with a .theme file (backs up the
+               previous one). Roles this app does not use are preserved.
 `
 
 const keysUsage = `Usage:
@@ -365,6 +372,14 @@ func isMFASecretEntry(entry passstore.Entry) bool {
 // runTheme opens the theme builder as a standalone full-screen program and
 // writes the result, mirroring the Ctrl-O modal available from the homepage.
 func (r runner) runTheme(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "export":
+			return r.runThemeExport(args[1:])
+		case "import":
+			return r.runThemeImport(args[1:])
+		}
+	}
 	flags, rest, err := parseCommon(args)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
@@ -401,6 +416,79 @@ func (r runner) runTheme(args []string) int {
 		return 0
 	}
 	saved, err := r.saveThemeConfig(context.Background(), flags, result)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(r.stderr, saved.Message)
+	return 0
+}
+
+// runThemeExport writes the active theme to a portable .theme file that any
+// sibling app (ssherpa, future TUIs) can import.
+func (r runner) runThemeExport(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, themeUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(r.stderr, "passage: theme export needs exactly one PATH")
+		return 1
+	}
+	dest := rest[0]
+	_, cfg, _, err := r.loadThemeEditorConfig(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	base, ok := termstyle.BuiltinTheme(cfg.BaseName)
+	if !ok {
+		base = termstyle.TerminalTheme()
+	}
+	data := termstyle.ExportTheme(cfg, base, "passage", r.build.Version)
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		fmt.Fprintf(r.stderr, "passage: write %s: %v\n", dest, err)
+		return 1
+	}
+	fmt.Fprintf(r.stderr, "Theme exported to %s.\n", dest)
+	return 0
+}
+
+// runThemeImport loads a portable .theme file and writes it as the active
+// theme config (with an atomic backup of the previous one).
+func (r runner) runThemeImport(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, themeUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(r.stderr, "passage: theme import needs exactly one PATH")
+		return 1
+	}
+	data, err := os.ReadFile(rest[0])
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: read %s: %v\n", rest[0], err)
+		return 1
+	}
+	cfg, meta, err := termstyle.ImportTheme(data)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %s is not a valid theme: %v\n", rest[0], err)
+		return 1
+	}
+	for _, w := range meta.Warnings {
+		fmt.Fprintf(r.stderr, "passage: note: %s\n", w)
+	}
+	saved, err := r.saveThemeConfig(context.Background(), flags, ui.ThemeEditorResult{Config: cfg})
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1

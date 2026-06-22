@@ -226,3 +226,46 @@ func makeScript(t *testing.T, dir string, name string, body string) {
 		t.Fatalf("WriteFile %s: %v", name, err)
 	}
 }
+
+// TestThemeExportImportRoundTrip drives Phase 5 through the CLI: export the
+// active theme to a portable .theme file, then import it into a fresh config,
+// asserting the base + a role survive the round-trip.
+func TestThemeExportImportRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.conf")
+	if err := os.WriteFile(src, []byte("theme = vivid\nprimary = red\n"), 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	exported := filepath.Join(dir, "out.theme")
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"theme", "export", "--theme-file", src, exported}, &stdout, &stderr, BuildInfo{Version: "test"}); code != 0 {
+		t.Fatalf("export = %d; stderr=%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(exported)
+	if err != nil {
+		t.Fatalf("read exported: %v", err)
+	}
+	out := string(data)
+	for _, want := range []string{"# termtheme v1", "theme = vivid", "primary = red"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("export missing %q:\n%s", want, out)
+		}
+	}
+
+	// Import into a fresh config file.
+	dest := filepath.Join(dir, "dest.conf")
+	stderr.Reset()
+	if code := Run([]string{"theme", "import", "--theme-file", dest, exported}, &stdout, &stderr, BuildInfo{}); code != 0 {
+		t.Fatalf("import = %d; stderr=%s", code, stderr.String())
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	for _, want := range []string{"theme = vivid", "primary = red"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("imported config missing %q:\n%s", want, got)
+		}
+	}
+}

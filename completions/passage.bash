@@ -51,7 +51,7 @@ _passage()
             return
             ;;
         theme)
-            COMPREPLY=( $(compgen -W "--theme-file --no-color --no-alt-screen --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "export import --theme-file --no-color --no-alt-screen --help" -- "$cur") )
             return
             ;;
         help)

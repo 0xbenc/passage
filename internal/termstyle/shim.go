@@ -52,3 +52,22 @@ var (
 	Truncate         = termtheme.Truncate
 	TruncateWith     = termtheme.TruncateWith
 )
+
+// ThemeMeta is the header/version info recovered from a portable .theme file.
+type ThemeMeta = termtheme.Meta
+
+// ExportTheme serializes the resolved theme to the portable .theme format: a
+// versioned header plus a full inline dump of every role, so the file is
+// self-contained and interchanges with any sibling app. base is the builtin
+// palette the config was authored against (passage Theme and termtheme.Theme
+// share an identical layout, so the conversion is free).
+func ExportTheme(cfg ThemeConfig, base Theme, app, version string) []byte {
+	return termtheme.Marshal(cfg, termtheme.Theme(base), termtheme.MarshalOptions{
+		App:        app,
+		AppVersion: version,
+		Roles:      Roles(),
+	})
+}
+
+// ImportTheme parses a portable .theme file into a config plus its metadata.
+var ImportTheme = termtheme.Unmarshal
