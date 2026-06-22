@@ -437,7 +437,26 @@ func (m pickerModel) View() tea.View {
 	// Ask the terminal to report focus so a revealed secret can be blanked
 	// when the user alt-tabs away.
 	view.ReportFocus = true
+	view.Cursor = m.filterCursor(spec, theme)
 	return view
+}
+
+// filterCursor places a real beam cursor at the end of the filter field. It
+// returns nil while any overlay owns the keyboard (busy / modal / confirm /
+// help / theme editor) so the cursor never blinks on a revealed secret or
+// where typing does not go.
+func (m pickerModel) filterCursor(spec layoutSpec, theme pickerTheme) *tea.Cursor {
+	if m.busy != nil || m.modal != nil || m.confirm != nil || m.help || m.themeEditor != nil {
+		return nil
+	}
+	counter := theme.counter(len(m.filtered), len(m.entries))
+	fieldWidth := max(8, spec.bodyWidth-termstyle.VisibleWidth(counter)-1-4)
+	qWidth := min(termstyle.VisibleWidth(termstyle.Sanitize(m.query)), fieldWidth)
+	// X: "│ " (2) + "/" (1) + typed width. Y: the filter is the last header
+	// row, one below the top border — i.e. len(header) rows down.
+	cursor := tea.NewCursor(3+qWidth, len(spec.header))
+	cursor.Shape = tea.CursorBar
+	return cursor
 }
 
 // layoutSpec is the single per-frame geometry budget. The picker computes it

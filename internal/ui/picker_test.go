@@ -159,6 +159,48 @@ func TestPickerViewUsesWorkflowShell(t *testing.T) {
 	}
 }
 
+func TestFilterCursorTracksQueryAndHidesOverModal(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{Glyphs: termstyle.ASCIIGlyphs()}, termstyle.TerminalTheme())
+	model.width = 80
+	model.height = 20
+
+	// Empty query: beam sits just after the "/" label (X = 3), on the filter
+	// row (Y = 2 with no message).
+	c := model.View().Cursor
+	if c == nil {
+		t.Fatal("filter cursor should be present")
+	}
+	if c.X != 3 || c.Y != 2 {
+		t.Fatalf("empty-query cursor = (%d,%d), want (3,2)", c.X, c.Y)
+	}
+	if c.Shape != tea.CursorBar {
+		t.Fatal("filter cursor should be a beam")
+	}
+
+	// Typing advances the cursor by the query width.
+	for _, ch := range []string{"a", "l"} {
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: ch}))
+		model = updated.(pickerModel)
+	}
+	if c := model.View().Cursor; c == nil || c.X != 5 {
+		t.Fatalf("after typing 'al', cursor X = %v, want 5", c)
+	}
+
+	// A message pushes the filter row (and cursor) down by two.
+	model.message = "copied"
+	if c := model.View().Cursor; c == nil || c.Y != 4 {
+		t.Fatalf("cursor Y with message = %v, want 4", c)
+	}
+
+	// Over a secret modal the cursor is suppressed.
+	model.applyOutcome(0, ActionOutcome{SecretKind: "totp", Secret: "123 456", SecretRemaining: 8, SecretPeriod: 30})
+	if c := model.View().Cursor; c != nil {
+		t.Fatal("cursor must be nil while a secret modal is open")
+	}
+}
+
 func TestQuestionMarkOpensHelpOverlay(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "alpha", Display: "alpha"},
