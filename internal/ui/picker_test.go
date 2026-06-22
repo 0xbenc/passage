@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -580,6 +581,28 @@ func actionDoneFromCmd(cmd tea.Cmd) (actionDoneMsg, bool) {
 		}
 	}
 	return actionDoneMsg{}, false
+}
+
+// TestBusyBoxShowsSpinnerAndElapsed pins C12: the busy box animates a spinner
+// frame and shows elapsed time derived from the start clock.
+func TestBusyBoxShowsSpinnerAndElapsed(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{Glyphs: termstyle.ASCIIGlyphs()}, termstyle.TerminalTheme().WithNoColor(true))
+	base := time.Unix(1000, 0)
+	model.clock = func() time.Time { return base.Add(3 * time.Second) }
+	model.busy = &pickerBusy{title: "copying", detail: "alpha", started: base}
+
+	joined := strings.Join(model.busyLines(60, pickerTheme{theme: model.theme}), "\n")
+	if !strings.Contains(joined, "copying alpha") {
+		t.Fatalf("busy box missing title:\n%s", joined)
+	}
+	if !strings.Contains(joined, "3s elapsed") {
+		t.Fatalf("busy box missing elapsed:\n%s", joined)
+	}
+	if frame := model.glyphs.Frame(model.tick); !strings.Contains(joined, frame) {
+		t.Fatalf("busy box missing spinner frame %q:\n%s", frame, joined)
+	}
 }
 
 // TestPickerTickGatedToLiveState pins the C9 contract: a tickMsg keeps the

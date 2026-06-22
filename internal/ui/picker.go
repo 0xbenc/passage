@@ -957,17 +957,35 @@ func (m pickerModel) busyLines(width int, theme pickerTheme) []string {
 	if m.busy.detail != "" {
 		title += " " + m.busy.detail
 	}
-	body := []string{theme.primary(title)}
+	// The spinner frame advances with the gated tick, so a slow gpg reads as
+	// working rather than hung. Elapsed is derived here (View side) from the
+	// start time, keeping the model snapshot itself deterministic.
+	spinner := theme.accent(m.glyphs.Frame(m.tick))
+	body := []string{strings.TrimSpace(spinner + " " + theme.primary(title))}
+	status := "This will return to the picker."
 	if m.busy.canceling {
-		body = append(body, "", theme.muted("Cancel requested. Waiting for the command to stop."))
-	} else {
-		body = append(body, "", theme.muted("This will return to the picker."))
+		status = "Cancel requested. Waiting for the command to stop."
 	}
+	if elapsed := m.busyElapsed(); elapsed != "" {
+		status = elapsed + "  ·  " + status
+	}
+	body = append(body, "", theme.muted(status))
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "working",
 		Body:   body,
 		Footer: "esc cancel  ^C/^Q quit",
 	}))
+}
+
+func (m pickerModel) busyElapsed() string {
+	if m.busy == nil || m.busy.started.IsZero() {
+		return ""
+	}
+	secs := int(m.now().Sub(m.busy.started).Seconds())
+	if secs < 0 {
+		secs = 0
+	}
+	return fmt.Sprintf("%ds elapsed", secs)
 }
 
 func (m pickerModel) modalLines(width int, theme pickerTheme) []string {
