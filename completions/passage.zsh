@@ -16,6 +16,7 @@ _passage() {
     'clear-clipboard:Clear the clipboard'
     'doctor:Run health checks'
     'keys:List local GPG keys'
+    'theme:Open the theme builder'
     'version:Print version'
     'help:Show help'
   )

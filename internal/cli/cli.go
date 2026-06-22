@@ -39,6 +39,7 @@ Commands:
   clear-clipboard  Clear the clipboard
   doctor           Check pass, gpg, clipboard, and .gpg-id health
   keys             List local GPG public keys
+  theme            Open the theme builder (choose a base palette, tune colors)
   version          Print build version information
   help             Show help
 
@@ -67,6 +68,14 @@ const totpUsage = `Usage:
 
 const doctorUsage = `Usage:
   passage doctor [--json] [--store-dir PATH]
+`
+
+const themeUsage = `Usage:
+  passage theme [--theme-file PATH] [--no-color] [--no-alt-screen]
+
+Open the theme builder. Pick a base palette (terminal or vivid) on the
+top row, tune individual roles below, preview live, then press s to save.
+The same builder is reachable from the homepage with Ctrl-O.
 `
 
 const keysUsage = `Usage:
@@ -171,6 +180,8 @@ func (r runner) run(args []string) int {
 		return r.runDoctor(args[1:])
 	case "keys":
 		return r.runKeys(args[1:])
+	case "theme":
+		return r.runTheme(args[1:])
 	default:
 		return r.runInteractive(args, false)
 	}
@@ -200,6 +211,8 @@ func (r runner) runHelp(args []string) int {
 		fmt.Fprint(r.stdout, doctorUsage)
 	case "keys":
 		fmt.Fprint(r.stdout, keysUsage)
+	case "theme":
+		fmt.Fprint(r.stdout, themeUsage)
 	case "version":
 		fmt.Fprint(r.stdout, versionUsage)
 	default:
@@ -347,6 +360,53 @@ func (r runner) runAutoAction(ctx context.Context, rt runtimeState, entry passst
 
 func isMFASecretEntry(entry passstore.Entry) bool {
 	return entry.Path == "mfa" || strings.HasSuffix(entry.Path, "/mfa")
+}
+
+// runTheme opens the theme builder as a standalone full-screen program and
+// writes the result, mirroring the Ctrl-O modal available from the homepage.
+func (r runner) runTheme(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, themeUsage)
+		return 0
+	}
+	if len(rest) > 0 {
+		fmt.Fprintf(r.stderr, "passage: unexpected arguments: %s\n", strings.Join(rest, " "))
+		return 1
+	}
+	path, cfg, warning, err := r.loadThemeEditorConfig(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	result, ok, err := ui.EditTheme(context.Background(), ui.ThemeEditorOptions{
+		Input:       os.Stdin,
+		Output:      r.stderr,
+		NoAltScreen: flags.noAltScreen,
+		NoColor:     flags.noColor,
+		Config:      cfg,
+		ConfigPath:  path,
+		Warning:     warning,
+	})
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: theme editor failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintln(r.stderr, "Theme edit cancelled.")
+		return 0
+	}
+	saved, err := r.saveThemeConfig(context.Background(), flags, result)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(r.stderr, saved.Message)
+	return 0
 }
 
 func (r runner) loadThemeEditorConfig(flags commonFlags) (string, termstyle.ThemeConfig, string, error) {

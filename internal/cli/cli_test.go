@@ -11,6 +11,43 @@ import (
 	"github.com/0xbenc/passage/internal/termstyle"
 )
 
+// TestThemeCommandHelp verifies the standalone `passage theme` command is
+// wired into dispatch and help without launching the (TTY-only) editor.
+func TestThemeCommandHelp(t *testing.T) {
+	cases := [][]string{
+		{"theme", "--help"},
+		{"help", "theme"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(args, &stdout, &stderr, BuildInfo{})
+			if code != 0 {
+				t.Fatalf("Run(%v) = %d, want 0; stderr=%s", args, code, stderr.String())
+			}
+			out := stdout.String()
+			for _, want := range []string{"passage theme", "base palette", "Ctrl-O"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("theme usage missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestThemeCommandRejectsArgs ensures stray positional args are rejected rather
+// than silently launching the editor.
+func TestThemeCommandRejectsArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"theme", "bogus"}, &stdout, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("Run = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unexpected arguments") {
+		t.Fatalf("stderr = %q, want unexpected arguments", stderr.String())
+	}
+}
+
 // TestFormatThemeConfigRoundTripsBase pins the theme-choice persistence
 // contract: a non-default base is written as `theme = <name>` and survives a
 // format→parse round-trip, while the implicit terminal default is omitted to

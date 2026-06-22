@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"io"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,6 +11,10 @@ import (
 )
 
 type ThemeEditorOptions struct {
+	// Input/Output are only used by the standalone EditTheme program; the
+	// picker hosts the editor model directly and leaves them nil.
+	Input       io.Reader
+	Output      io.Writer
 	NoAltScreen bool
 	NoColor     bool
 	Config      termstyle.ThemeConfig
@@ -33,6 +38,69 @@ type ThemeSaveResult struct {
 }
 
 type ThemeSaveFunc func(context.Context, ThemeEditorResult) (ThemeSaveResult, error)
+
+// EditTheme runs the theme builder as its own full-screen program, for the
+// `passage theme` command. The picker hosts the same editor model inline via
+// Ctrl-O; this is the standalone path. It returns ok=false when the user quits
+// without saving, so the caller writes nothing.
+func EditTheme(ctx context.Context, opts ThemeEditorOptions) (ThemeEditorResult, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	program := themeEditorProgram{
+		editor:      newThemeEditorModel(opts),
+		noAltScreen: opts.NoAltScreen,
+	}
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	if opts.Input != nil {
+		programOptions = append(programOptions, tea.WithInput(opts.Input))
+	}
+	if opts.Output != nil {
+		programOptions = append(programOptions, tea.WithOutput(opts.Output))
+	}
+	final, err := tea.NewProgram(program, programOptions...).Run()
+	if err != nil {
+		return ThemeEditorResult{}, false, err
+	}
+	done, ok := final.(themeEditorProgram)
+	if !ok || done.editor.canceled || !done.editor.saved {
+		return ThemeEditorResult{}, false, nil
+	}
+	return done.editor.result(), true, nil
+}
+
+// themeEditorProgram adapts the picker-hosted themeEditorModel to the
+// tea.Model interface so it can run on its own.
+type themeEditorProgram struct {
+	editor      themeEditorModel
+	noAltScreen bool
+}
+
+func (p themeEditorProgram) Init() tea.Cmd { return tea.RequestWindowSize }
+
+func (p themeEditorProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		// Quit shortcuts must win even mid raw-edit, matching the picker host.
+		if k := normalizedKey(key); k == "ctrl+c" || k == "ctrl+q" {
+			p.editor.canceled = true
+			return p, tea.Quit
+		}
+	}
+	updated, done := p.editor.update(msg)
+	p.editor = updated
+	if done {
+		return p, tea.Quit
+	}
+	return p, nil
+}
+
+func (p themeEditorProgram) View() tea.View {
+	width := max(48, p.editor.width)
+	editorTheme := pickerTheme{theme: p.editor.currentTheme()}
+	view := tea.NewView(strings.Join(p.editor.view(width, editorTheme), "\n") + "\n")
+	view.AltScreen = !p.noAltScreen
+	return view
+}
 
 type themeEditorModel struct {
 	values     map[termstyle.Role]string
