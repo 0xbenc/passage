@@ -133,6 +133,7 @@ type pickerModel struct {
 	width        int
 	height       int
 	ctx          context.Context
+	clock        func() time.Time
 	runAction    ActionRunner
 	busy         *pickerBusy
 	modal        *pickerModal
@@ -191,6 +192,7 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		width:        92,
 		height:       28,
 		ctx:          context.Background(),
+		clock:        time.Now,
 		runAction:    opts.RunAction,
 		themeConfig:  opts.ThemeConfig,
 		themePath:    opts.ThemePath,
@@ -302,7 +304,14 @@ func (m pickerModel) View() tea.View {
 	theme := pickerTheme{theme: m.theme}
 	spec := m.computeLayout(theme)
 	body := append([]string{}, spec.header...)
-	body = append(body, m.listLines(spec.bodyWidth, theme, spec.listHeight)...)
+	if spec.detailWidth > 0 && m.busy == nil && m.modal == nil {
+		listLines := m.listLines(spec.listWidth, theme, spec.listHeight)
+		detail := m.detailPane(spec.detailWidth, theme)
+		sep := " " + theme.style(termstyle.RoleBorder, "│") + " "
+		body = append(body, joinColumns(listLines, detail, spec.listWidth, spec.detailWidth, sep, spec.listHeight)...)
+	} else {
+		body = append(body, m.listLines(spec.bodyWidth, theme, spec.listHeight)...)
+	}
 	body = append(body, spec.tail...)
 	view := tea.NewView(renderWorkflowShell(theme, spec.width, workflowShell{
 		Title:  m.titleLine(),
@@ -322,18 +331,38 @@ func (m pickerModel) View() tea.View {
 // box was on screen, scrolling as if the list were two rows taller than it
 // was.
 type layoutSpec struct {
-	width      int
-	bodyWidth  int
-	footer     string
-	header     []string // lines above the list (message, status, filter)
-	tail       []string // lines below the list (busy / modal boxes)
-	listHeight int      // rows available for the entry list
+	width       int
+	bodyWidth   int
+	footer      string
+	header      []string // lines above the list (message, status, filter)
+	tail        []string // lines below the list (busy / modal boxes)
+	listHeight  int      // rows available for the entry list
+	listWidth   int      // width of the list column (== bodyWidth when narrow)
+	detailWidth int      // width of the detail pane, or 0 when narrow
 }
+
+// detailBreakpoint is the terminal width at and above which the picker shows a
+// side detail pane. detailSepWidth is the visible width of the column
+// separator (" │ "); listWidth + detailSepWidth + detailWidth == bodyWidth.
+const (
+	detailBreakpoint = 92
+	detailSepWidth   = 3
+)
 
 func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 	width := max(48, m.width)
 	footer := pickerFooterText()
 	bodyWidth := max(20, width-4)
+	listWidth := bodyWidth
+	detailWidth := 0
+	if width >= detailBreakpoint {
+		dw := clamp(bodyWidth/3, 28, 44)
+		lw := bodyWidth - dw - detailSepWidth
+		if lw >= 40 {
+			listWidth = lw
+			detailWidth = dw
+		}
+	}
 	var header []string
 	if m.message != "" {
 		line := theme.success(termstyle.Truncate(m.message, bodyWidth))
@@ -354,12 +383,14 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 	}
 	listHeight := max(1, m.height-pickerShellStructuralLines(footer)-len(header)-len(tail))
 	return layoutSpec{
-		width:      width,
-		bodyWidth:  bodyWidth,
-		footer:     footer,
-		header:     header,
-		tail:       tail,
-		listHeight: listHeight,
+		width:       width,
+		bodyWidth:   bodyWidth,
+		footer:      footer,
+		header:      header,
+		tail:        tail,
+		listHeight:  listHeight,
+		listWidth:   listWidth,
+		detailWidth: detailWidth,
 	}
 }
 
@@ -523,6 +554,68 @@ func highlightTitle(display string, positions []int, width int, base func(string
 		b.WriteString(base("~"))
 	}
 	return b.String()
+}
+
+// detailPane renders the side panel shown at wide widths: the selected entry's
+// full (Sanitized) path, its pin/MFA state, when it was last used, and the
+// primary action hints. It reads only already-loaded metadata — it never
+// decrypts or runs an action, so opening the picker stays cheap and a revealed
+// secret can never reach this pane.
+func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
+	entry, ok := m.selectedEntry()
+	if !ok {
+		return []string{theme.muted(termstyle.Truncate("no entry selected", width))}
+	}
+	var lines []string
+	for _, ln := range hardWrap(termstyle.Sanitize(entry.Path), width) {
+		lines = append(lines, theme.primary(termstyle.Truncate(ln, width)))
+	}
+	lines = append(lines, "")
+	state := []string{}
+	if entry.Pinned {
+		state = append(state, "★ pinned")
+	}
+	if entry.HasMFA {
+		state = append(state, "mfa")
+	}
+	if len(state) > 0 {
+		lines = append(lines, theme.accent(termstyle.Truncate(strings.Join(state, "   "), width)))
+	}
+	lines = append(lines, theme.muted(termstyle.Truncate("used "+humanizeRelative(entry.LastUsed, m.now()), width)))
+	lines = append(lines, "")
+	for _, ln := range wrapText("enter copy · ^R reveal · ^T totp · ^P pin", width) {
+		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
+	}
+	return lines
+}
+
+func (m pickerModel) now() time.Time {
+	if m.clock != nil {
+		return m.clock()
+	}
+	return time.Now()
+}
+
+// humanizeRelative renders a coarse "time ago" for the last-used timestamp.
+func humanizeRelative(unix int64, now time.Time) string {
+	if unix <= 0 {
+		return "never"
+	}
+	d := now.Sub(time.Unix(unix, 0))
+	switch {
+	case d < 0:
+		return "just now"
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return time.Unix(unix, 0).Format("2006-01-02")
+	}
 }
 
 func (m *pickerModel) applyFilter() {

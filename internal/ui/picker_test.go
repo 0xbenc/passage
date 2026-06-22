@@ -210,6 +210,61 @@ func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
 	}
 }
 
+func TestPickerDetailPaneShowsPathWithoutDecrypting(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "work/github/token", Display: passstore.Display("work/github/token"), Pinned: true, HasMFA: true},
+	}, PickOptions{
+		NoColor: true,
+		RunAction: func(context.Context, ActionRequest) ActionOutcome {
+			t.Fatal("detail pane must never run an action (no decrypt)")
+			return ActionOutcome{}
+		},
+	}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 100
+	model.height = 24
+
+	text := model.View().Content
+	if !strings.Contains(text, "work/github/token") {
+		t.Fatalf("wide view should show the full path in the detail pane:\n%s", text)
+	}
+	if !strings.Contains(text, "pinned") {
+		t.Fatalf("detail pane should show pin state:\n%s", text)
+	}
+}
+
+func TestPickerDetailPaneHiddenWhenNarrow(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "work/github/token", Display: passstore.Display("work/github/token")},
+	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 80 // below the 92-col breakpoint
+	model.height = 24
+
+	text := model.View().Content
+	if strings.Contains(text, "work/github/token") {
+		t.Fatalf("narrow view must not render the slashed full path (no detail pane):\n%s", text)
+	}
+}
+
+func TestPickerWideRowsFillInnerWidthExactly(t *testing.T) {
+	model := newPickerModel(manyEntries(20), PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 110
+	model.height = 24
+
+	text := model.View().Content
+	// Every framed row "│ <inner> │" must have inner width == width-4 so the
+	// two-column join never desynced the right border.
+	inner := model.width - 4
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if !strings.HasPrefix(line, "│ ") || !strings.HasSuffix(line, " │") {
+			continue
+		}
+		content := strings.TrimSuffix(strings.TrimPrefix(line, "│ "), " │")
+		if w := termstyle.VisibleWidth(content); w != inner {
+			t.Fatalf("framed row inner width = %d, want %d: %q", w, inner, line)
+		}
+	}
+}
+
 func TestPickerCtrlHotkeysRunActions(t *testing.T) {
 	tests := []struct {
 		name   string

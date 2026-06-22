@@ -124,6 +124,65 @@ func wrapText(value string, width int) []string {
 	return out
 }
 
+// joinColumns lays two pre-rendered, possibly-styled column blocks side by
+// side: each output row is left padded/truncated to leftWidth, then sep, then
+// right padded/truncated to rightWidth. The caller guarantees
+// leftWidth+VisibleWidth(sep)+rightWidth equals the shell's inner width, so the
+// joined row fills the row exactly and workflowLine never re-truncates it
+// (which would mangle the divider). Rows are capped at height.
+func joinColumns(left, right []string, leftWidth, rightWidth int, sep string, height int) []string {
+	rows := max(len(left), len(right))
+	if height > 0 && rows > height {
+		rows = height
+	}
+	out := make([]string, 0, rows)
+	for i := 0; i < rows; i++ {
+		l, r := "", ""
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		l = termstyle.PadRight(termstyle.Truncate(l, leftWidth), leftWidth)
+		r = termstyle.PadRight(termstyle.Truncate(r, rightWidth), rightWidth)
+		out = append(out, l+sep+r)
+	}
+	return out
+}
+
+// hardWrap breaks value into lines no wider than width cells, splitting on rune
+// boundaries even mid-"word" (paths have no spaces). Unlike wrapText it never
+// overflows the width, so a long entry path wraps cleanly inside a column.
+func hardWrap(value string, width int) []string {
+	if width < 1 {
+		return []string{value}
+	}
+	var out []string
+	var line strings.Builder
+	w := 0
+	for _, r := range value {
+		rw := termstyle.VisibleWidth(string(r))
+		if rw < 1 {
+			rw = 1
+		}
+		if w > 0 && w+rw > width {
+			out = append(out, line.String())
+			line.Reset()
+			w = 0
+		}
+		line.WriteRune(r)
+		w += rw
+	}
+	if line.Len() > 0 {
+		out = append(out, line.String())
+	}
+	if len(out) == 0 {
+		out = append(out, "")
+	}
+	return out
+}
+
 func splitRendered(value string) []string {
 	value = strings.TrimRight(value, "\n")
 	if value == "" {
