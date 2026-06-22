@@ -232,6 +232,16 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
 	}
+	// When a filter narrows the store to exactly one entry, skip the picker and
+	// run the default action directly (copy, or TOTP for MFA), matching what
+	// pressing enter on that lone entry would do.
+	if filter != "" {
+		if matches := passstore.FilterEntries(rt.entries, filter, mfaOnly); len(matches) == 1 {
+			rt.store.Stdin = os.Stdin
+			rt.store.Stderr = r.stderr
+			return r.runAutoAction(ctx, rt, matches[0], mfaOnly, flags)
+		}
+	}
 	themePath, themeConfig, themeWarning, err := r.loadThemeEditorConfig(flags)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
@@ -270,6 +280,35 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		return 1
 	}
 	return 0
+}
+
+// runAutoAction performs the default action for a single filtered entry without
+// opening the picker. It mirrors the picker's primary action: TOTP for MFA-only
+// browsing or an MFA secret entry, otherwise copy.
+func (r runner) runAutoAction(ctx context.Context, rt runtimeState, entry passstore.Entry, mfaOnly bool, flags commonFlags) int {
+	if mfaOnly || isMFASecretEntry(entry) {
+		code, msg, err := r.generateTOTP(ctx, rt, entry.Path, totpOptions{copy: true})
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(r.stdout, code.Value)
+		if msg != "" {
+			fmt.Fprintln(r.stderr, msg)
+		}
+		return 0
+	}
+	msg, err := r.copyEntry(ctx, rt, entry.Path, false)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(r.stderr, msg)
+	return 0
+}
+
+func isMFASecretEntry(entry passstore.Entry) bool {
+	return entry.Path == "mfa" || strings.HasSuffix(entry.Path, "/mfa")
 }
 
 func (r runner) loadThemeEditorConfig(flags commonFlags) (string, termstyle.ThemeConfig, string, error) {

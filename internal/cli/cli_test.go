@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,61 @@ if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github ]; then printf 'pw\n
 	}
 	if string(data) != "pw" {
 		t.Fatalf("clipboard = %q", data)
+	}
+}
+
+func TestRunFilterSingleMatchAutoCopies(t *testing.T) {
+	store := fakeStore(t)
+	bin := t.TempDir()
+	clipOut := filepath.Join(bin, "clip.txt")
+	makeScript(t, bin, "pass", `if [ "$PASSWORD_STORE_DIR" != "$STORE_ROOT" ]; then echo "bad store: $PASSWORD_STORE_DIR" >&2; exit 8; fi
+if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = alpha ]; then printf 'sekret\nuser: bob\n'; exit 0; fi; exit 9`)
+	makeScript(t, bin, "pbcopy", `/bin/cat > "$CLIP_OUT"`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", filepath.Join(bin, "pass"))
+	t.Setenv("CLIP_OUT", clipOut)
+	t.Setenv("STORE_ROOT", store)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"alpha", "--store-dir", store, "--state-dir", t.TempDir(), "--no-color"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run = %d, stderr=%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(clipOut)
+	if err != nil {
+		t.Fatalf("ReadFile: %v (the picker likely opened instead of auto-copying); stderr=%s", err, stderr.String())
+	}
+	if string(data) != "sekret" {
+		t.Fatalf("clipboard = %q", data)
+	}
+}
+
+func TestRunMFAFilterSingleMatchShowsAndCopiesTOTP(t *testing.T) {
+	store := fakeStore(t)
+	bin := t.TempDir()
+	clipOut := filepath.Join(bin, "clip.txt")
+	// "mfa" matches only work/github/mfa among the MFA-capable entries.
+	makeScript(t, bin, "pass", `if [ "$PASSWORD_STORE_DIR" != "$STORE_ROOT" ]; then echo "bad store: $PASSWORD_STORE_DIR" >&2; exit 8; fi
+if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then printf 'JBSWY3DPEHPK3PXP\n'; exit 0; fi; exit 9`)
+	makeScript(t, bin, "pbcopy", `/bin/cat > "$CLIP_OUT"`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", filepath.Join(bin, "pass"))
+	t.Setenv("CLIP_OUT", clipOut)
+	t.Setenv("STORE_ROOT", store)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"mfa", "mfa", "--store-dir", store, "--state-dir", t.TempDir(), "--no-color"}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run = %d, stderr=%s", code, stderr.String())
+	}
+	shown := strings.TrimSpace(stdout.String())
+	if len(shown) != 6 {
+		t.Fatalf("TOTP shown onscreen = %q, want 6 digits", shown)
+	}
+	data, err := os.ReadFile(clipOut)
+	if err != nil {
+		t.Fatalf("ReadFile: %v (the picker likely opened instead of auto-running TOTP); stderr=%s", err, stderr.String())
+	}
+	if string(data) != shown {
+		t.Fatalf("clipboard = %q, shown = %q", data, shown)
 	}
 }
 
