@@ -3,6 +3,8 @@ package termstyle
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 const reset = "\x1b[0m"
@@ -14,6 +16,14 @@ func Apply(noColor bool, code string, value string) string {
 	return "\x1b[" + code + "m" + value + reset
 }
 
+// VisibleWidth reports the terminal cell width of value, ignoring ANSI escape
+// sequences and accounting for wide runes (East Asian, emoji) and zero-width
+// runes (combining marks, controls). It keeps passage's own escape-skipping —
+// so the audited handling of malformed sequences is unchanged — and measures
+// each printable run with ansi.StringWidth, the exact cell measure the Bubble
+// Tea v2 renderer uses to paint (cursed_renderer.go). The measure is
+// locale-independent: it honors only RUNEWIDTH_EASTASIAN, never LANG, so the
+// box-drawing chrome can never desync from the painter in a CJK locale.
 func VisibleWidth(value string) int {
 	width := 0
 	for i := 0; i < len(value); {
@@ -21,15 +31,24 @@ func VisibleWidth(value string) int {
 			i = skipEscape(value, i)
 			continue
 		}
-		_, size := utf8.DecodeRuneInString(value[i:])
-		if size <= 0 {
-			i++
-			continue
+		j := i
+		for j < len(value) && value[j] != '\x1b' {
+			j++
 		}
-		width++
-		i += size
+		width += ansi.StringWidth(value[i:j])
+		i = j
 	}
 	return width
+}
+
+// cellWidth returns the terminal cell width of a single rune (0 for controls
+// and combining marks, 2 for wide runes), consistent with VisibleWidth.
+func cellWidth(r rune) int {
+	w := ansi.StringWidth(string(r))
+	if w < 0 {
+		return 0
+	}
+	return w
 }
 
 func Strip(value string) string {
@@ -186,11 +205,12 @@ func PadRight(value string, width int) string {
 	return value + strings.Repeat(" ", padding)
 }
 
-// Truncate shortens value to at most width visible runes, marking cut text
+// Truncate shortens value to at most width visible cells, marking cut text
 // with a trailing "~". Like VisibleWidth and PadRight it is escape-aware:
-// escape sequences do not count toward the width and are never split, and
-// if the kept portion leaves SGR styling active a reset is appended so
-// styling cannot leak past the truncation.
+// escape sequences do not count toward the width and are never split, wide
+// runes are never split across the cut, and if the kept portion leaves SGR
+// styling active a reset is appended so styling cannot leak past the
+// truncation.
 func Truncate(value string, width int) string {
 	if width <= 0 {
 		return ""
@@ -207,7 +227,7 @@ func Truncate(value string, width int) string {
 	var b strings.Builder
 	styled := false
 	visible := 0
-	for i := 0; i < len(value) && visible < keep; {
+	for i := 0; i < len(value); {
 		if value[i] == '\x1b' {
 			next := skipEscape(value, i)
 			seq := value[i:next]
@@ -223,8 +243,14 @@ func Truncate(value string, width int) string {
 			i++
 			continue
 		}
+		// Budget in cells, never splitting a wide rune across the cut.
+		// Zero-width runes (combining marks) ride along without cost.
+		w := cellWidth(r)
+		if w > 0 && visible+w > keep {
+			break
+		}
 		b.WriteRune(r)
-		visible++
+		visible += w
 		i += size
 	}
 	b.WriteString(marker)

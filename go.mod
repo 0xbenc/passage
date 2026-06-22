@@ -2,12 +2,14 @@ module github.com/0xbenc/passage
 
 go 1.26.3
 
-require charm.land/bubbletea/v2 v2.0.7
+require (
+	charm.land/bubbletea/v2 v2.0.7
+	github.com/charmbracelet/x/ansi v0.11.7
+)
 
 require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
