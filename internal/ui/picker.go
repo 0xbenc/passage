@@ -49,6 +49,10 @@ type PickOptions struct {
 	ThemeWarning string
 	SaveTheme    ThemeSaveFunc
 	Glyphs       termstyle.GlyphSet
+	// ClearClipboard quietly clears the clipboard when the armed countdown
+	// elapses — distinct from the ActionClearClipboard action so it does not
+	// flash a busy box.
+	ClearClipboard func(context.Context) error
 }
 
 type PickResult struct {
@@ -75,7 +79,14 @@ type ActionOutcome struct {
 	SecretPeriod    int
 	TextTitle       string
 	TextLines       []string
-	Err             error
+	// ClipArmed marks that a value was placed on the clipboard; the picker
+	// shows an armed pill counting down ClipRemaining seconds (named by
+	// ClipTool) and clears the clipboard at zero while it is open. Never
+	// carries the secret itself.
+	ClipArmed     bool
+	ClipRemaining int
+	ClipTool      string
+	Err           error
 }
 
 type ActionRunner func(context.Context, ActionRequest) ActionOutcome
@@ -117,42 +128,53 @@ func Pick(ctx context.Context, entries []passstore.Entry, opts PickOptions) (Pic
 }
 
 type pickerModel struct {
-	entries      []passstore.Entry
-	filtered     []passstore.Ranked
-	cursor       int
-	scroll       int
-	query        string
-	mfaOnly      bool
-	action       Action
-	selected     int
-	theme        termstyle.Theme
-	noColor      bool
-	title        string
-	version      string
-	storeRoot    string
-	message      string
-	messageErr   bool
-	noAltScreen  bool
-	width        int
-	height       int
-	ctx          context.Context
-	clock        func() time.Time
-	runAction    ActionRunner
-	busy         *pickerBusy
-	modal        *pickerModal
-	confirm      *pickerConfirm
-	actionSeq    int
-	activeID     int
-	tick         int  // animation frame counter, advanced by tickMsg
-	ticking      bool // whether a tick loop is currently in flight
-	themeConfig  termstyle.ThemeConfig
-	themePath    string
-	themeWarning string
-	saveTheme    ThemeSaveFunc
-	themeEditor  *themeEditorModel
-	glyphs       termstyle.GlyphSet
-	secretHidden bool // secret modal blanked because the terminal lost focus
+	entries        []passstore.Entry
+	filtered       []passstore.Ranked
+	cursor         int
+	scroll         int
+	query          string
+	mfaOnly        bool
+	action         Action
+	selected       int
+	theme          termstyle.Theme
+	noColor        bool
+	title          string
+	version        string
+	storeRoot      string
+	message        string
+	messageErr     bool
+	noAltScreen    bool
+	width          int
+	height         int
+	ctx            context.Context
+	clock          func() time.Time
+	runAction      ActionRunner
+	busy           *pickerBusy
+	modal          *pickerModal
+	confirm        *pickerConfirm
+	actionSeq      int
+	activeID       int
+	tick           int  // animation frame counter, advanced by tickMsg
+	ticking        bool // whether a tick loop is currently in flight
+	themeConfig    termstyle.ThemeConfig
+	themePath      string
+	themeWarning   string
+	saveTheme      ThemeSaveFunc
+	themeEditor    *themeEditorModel
+	glyphs         termstyle.GlyphSet
+	secretHidden   bool // secret modal blanked because the terminal lost focus
+	clip           *clipState
+	clearClipboard func(context.Context) error
 }
+
+// clipState tracks an armed clipboard: which tool holds it and when the
+// auto-clear fires. Recomputed from the wall clock, never holds the secret.
+type clipState struct {
+	tool    string
+	expires time.Time
+}
+
+type clipClearedMsg struct{ err error }
 
 type pickerBusy struct {
 	id        int
@@ -214,27 +236,28 @@ type themeSaveDoneMsg struct {
 
 func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle.Theme) pickerModel {
 	model := pickerModel{
-		entries:      append([]passstore.Entry(nil), entries...),
-		query:        strings.TrimSpace(opts.Filter),
-		mfaOnly:      opts.MFAOnly,
-		selected:     -1,
-		theme:        theme.WithNoColor(theme.NoColor || opts.NoColor),
-		noColor:      opts.NoColor,
-		title:        defaultString(opts.Title, "passage"),
-		version:      strings.TrimSpace(opts.Version),
-		storeRoot:    opts.StoreRoot,
-		message:      opts.Message,
-		noAltScreen:  opts.NoAltScreen,
-		width:        92,
-		height:       28,
-		ctx:          context.Background(),
-		clock:        time.Now,
-		runAction:    opts.RunAction,
-		themeConfig:  opts.ThemeConfig,
-		themePath:    opts.ThemePath,
-		themeWarning: opts.ThemeWarning,
-		saveTheme:    opts.SaveTheme,
-		glyphs:       opts.Glyphs,
+		entries:        append([]passstore.Entry(nil), entries...),
+		query:          strings.TrimSpace(opts.Filter),
+		mfaOnly:        opts.MFAOnly,
+		selected:       -1,
+		theme:          theme.WithNoColor(theme.NoColor || opts.NoColor),
+		noColor:        opts.NoColor,
+		title:          defaultString(opts.Title, "passage"),
+		version:        strings.TrimSpace(opts.Version),
+		storeRoot:      opts.StoreRoot,
+		message:        opts.Message,
+		noAltScreen:    opts.NoAltScreen,
+		width:          92,
+		height:         28,
+		ctx:            context.Background(),
+		clock:          time.Now,
+		runAction:      opts.RunAction,
+		themeConfig:    opts.ThemeConfig,
+		themePath:      opts.ThemePath,
+		themeWarning:   opts.ThemeWarning,
+		saveTheme:      opts.SaveTheme,
+		glyphs:         opts.Glyphs,
+		clearClipboard: opts.ClearClipboard,
 	}
 	if len(model.glyphs.Spinner) == 0 {
 		model.glyphs = termstyle.DefaultGlyphs()
@@ -268,11 +291,17 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.tick++
 		m.refreshSecretCountdown()
+		clearCmd := m.refreshClip()
 		if !m.tickActive() {
 			m.ticking = false
-			return m, nil
+			return m, clearCmd
 		}
-		return m, tickCmd()
+		return m, tea.Batch(tickCmd(), clearCmd)
+	case clipClearedMsg:
+		if msg.err == nil {
+			m.message = "Clipboard auto-cleared."
+			m.messageErr = false
+		}
 	case actionDoneMsg:
 		m.applyOutcome(msg.id, msg.outcome)
 		return m, m.maybeStartTick()
@@ -334,6 +363,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+o":
 			m.openThemeEditor()
 		case "ctrl+x":
+			m.clip = nil // manual clear disarms the auto-clear pill
 			return m.trigger(ActionClearClipboard)
 		case "ctrl+u":
 			return m.startConfirm(ActionClearPins), nil
@@ -495,7 +525,13 @@ func (m pickerModel) statusLine(width int, theme pickerTheme) string {
 	if m.mfaOnly {
 		parts = append(parts, "MFA-only")
 	}
-	return theme.muted(termstyle.Truncate(strings.Join(parts, "  ·  "), width))
+	line := theme.muted(strings.Join(parts, "  ·  "))
+	if m.clip != nil {
+		// Legible, honest clipboard state: it clears while passage is open.
+		pill := theme.warning(fmt.Sprintf("clip clears in ~%ds", m.clipRemaining()))
+		line += "  " + pill
+	}
+	return termstyle.Truncate(line, width)
 }
 
 func (m pickerModel) filterLine(width int, theme pickerTheme) string {
@@ -817,7 +853,7 @@ func (m pickerModel) pageSize() int {
 // tickActive reports whether motion should keep running: a busy action is in
 // flight, or a secret countdown is still on screen with time left.
 func (m pickerModel) tickActive() bool {
-	if m.busy != nil {
+	if m.busy != nil || m.clip != nil {
 		return true
 	}
 	return m.modal != nil && m.modal.secret && m.modal.remaining > 0
@@ -1085,6 +1121,12 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.message = out.Err.Error()
 		m.messageErr = true
 	}
+	if out.ClipArmed && out.ClipRemaining > 0 {
+		m.clip = &clipState{
+			tool:    out.ClipTool,
+			expires: m.now().Add(time.Duration(out.ClipRemaining) * time.Second),
+		}
+	}
 	if out.Secret != "" {
 		m.secretHidden = false
 		lines := wrapSecret(out.Secret, max(20, m.width-8))
@@ -1132,6 +1174,36 @@ func (m *pickerModel) refreshSecretCountdown() {
 		return
 	}
 	m.modal.remaining = int((d + time.Second - 1) / time.Second) // ceil to seconds
+}
+
+// clipRemaining is the armed clipboard's seconds left, rounded up.
+func (m pickerModel) clipRemaining() int {
+	if m.clip == nil {
+		return 0
+	}
+	d := m.clip.expires.Sub(m.now())
+	if d <= 0 {
+		return 0
+	}
+	return int((d + time.Second - 1) / time.Second)
+}
+
+// refreshClip disarms an expired clipboard and returns the quiet clear command
+// (or nil). The clear only fires while the picker is alive and foregrounded —
+// the pill copy promises no more than that.
+func (m *pickerModel) refreshClip() tea.Cmd {
+	if m.clip == nil || m.now().Before(m.clip.expires) {
+		return nil
+	}
+	m.clip = nil
+	if m.clearClipboard == nil {
+		return nil
+	}
+	clear := m.clearClipboard
+	ctx := m.ctx
+	return func() tea.Msg {
+		return clipClearedMsg{err: clear(ctx)}
+	}
 }
 
 func (m pickerModel) selectedEntry() (passstore.Entry, bool) {

@@ -258,17 +258,21 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		themeWarning += warning
 	}
 	_, err = ui.Pick(ctx, rt.entries, ui.PickOptions{
-		Output:       r.stderr,
-		NoColor:      flags.noColor,
-		Theme:        theme,
-		ThemeFile:    flags.themeFile,
-		Title:        "passage",
-		Version:      r.build.Version,
-		StoreRoot:    rt.storeDir,
-		Filter:       filter,
-		MFAOnly:      mfaOnly,
-		NoAltScreen:  flags.noAltScreen,
-		Glyphs:       termstyle.ResolveGlyphs(r.env),
+		Output:      r.stderr,
+		NoColor:     flags.noColor,
+		Theme:       theme,
+		ThemeFile:   flags.themeFile,
+		Title:       "passage",
+		Version:     r.build.Version,
+		StoreRoot:   rt.storeDir,
+		Filter:      filter,
+		MFAOnly:     mfaOnly,
+		NoAltScreen: flags.noAltScreen,
+		Glyphs:      termstyle.ResolveGlyphs(r.env),
+		ClearClipboard: func(clearCtx context.Context) error {
+			_, err := clipboard.Clear(clearCtx)
+			return err
+		},
 		ThemeConfig:  themeConfig,
 		ThemePath:    themePath,
 		ThemeWarning: themeWarning,
@@ -302,7 +306,7 @@ func (r runner) runAutoAction(ctx context.Context, rt runtimeState, entry passst
 		}
 		return 0
 	}
-	msg, err := r.copyEntry(ctx, rt, entry.Path, false)
+	msg, _, err := r.copyEntry(ctx, rt, entry.Path, false)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
@@ -512,7 +516,7 @@ func (r runner) runCopy(args []string) int {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
 	}
-	msg, err := r.copyEntry(context.Background(), rt, rest[0], private)
+	msg, _, err := r.copyEntry(context.Background(), rt, rest[0], private)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
@@ -864,7 +868,7 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 		}
 		return ui.ActionOutcome{Message: "Unpinned " + req.Entry.Path + ".", Entries: entries}
 	case ui.ActionCopy:
-		msg, err := r.copyEntry(ctx, *rt, req.Entry.Path, false)
+		msg, tool, err := r.copyEntry(ctx, *rt, req.Entry.Path, false)
 		if err != nil {
 			return ui.ActionOutcome{Err: err}
 		}
@@ -872,7 +876,13 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 		if refreshErr != nil {
 			return ui.ActionOutcome{Err: refreshErr}
 		}
-		return ui.ActionOutcome{Message: msg, Entries: entries}
+		out := ui.ActionOutcome{Message: msg, Entries: entries}
+		if tool != "" {
+			out.ClipArmed = true
+			out.ClipRemaining = clipboardArmSeconds
+			out.ClipTool = tool
+		}
+		return out
 	case ui.ActionReveal:
 		secret, msg, err := r.revealEntryInteractive(ctx, *rt, req.Entry.Path)
 		if err != nil {
@@ -968,14 +978,18 @@ func (r runner) stateDir(flags commonFlags) (string, error) {
 	return state.ResolveDir(r.env)
 }
 
-func (r runner) copyEntry(ctx context.Context, rt runtimeState, entryPath string, private bool) (string, error) {
+// clipboardArmSeconds is how long the interactive picker keeps a copied secret
+// on the clipboard before auto-clearing it while passage stays open.
+const clipboardArmSeconds = 45
+
+func (r runner) copyEntry(ctx context.Context, rt runtimeState, entryPath string, private bool) (string, string, error) {
 	entry, ok := findEntry(rt.entries, entryPath)
 	if !ok {
-		return "", fmt.Errorf("entry %q not found", entryPath)
+		return "", "", fmt.Errorf("entry %q not found", entryPath)
 	}
 	content, err := rt.store.Show(ctx, entry.Path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	password := passstore.FirstLine(content)
 	res, copyErr := clipboard.Copy(ctx, password)
@@ -984,13 +998,13 @@ func (r runner) copyEntry(ctx context.Context, rt runtimeState, entryPath string
 	if !private {
 		rt.state.Touch(entry.Path, passstore.TouchNow())
 		if err := rt.state.Save(rt.statePath); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	if copyErr != nil {
-		return "Clipboard copy failed: " + copyErr.Error(), nil
+		return "Clipboard copy failed: " + copyErr.Error(), "", nil
 	}
-	return "Password copied to clipboard (" + res.Tool + ").", nil
+	return "Password copied to clipboard (" + res.Tool + ").", res.Tool, nil
 }
 
 func (r runner) revealEntry(ctx context.Context, rt runtimeState, entryPath string, private bool, flags commonFlags) (string, error) {

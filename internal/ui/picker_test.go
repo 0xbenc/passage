@@ -781,6 +781,70 @@ func TestDestructiveClearsRequireConfirm(t *testing.T) {
 	}
 }
 
+// TestClipboardArmsAndAutoClears pins C14: a copy arms a countdown pill, the
+// pill counts down from the wall clock, and the clipboard auto-clears at zero
+// via the quiet clear func.
+func TestClipboardArmsAndAutoClears(t *testing.T) {
+	cleared := false
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{
+		ClearClipboard: func(context.Context) error { cleared = true; return nil },
+	}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 80
+	model.height = 18
+	base := time.Unix(5000, 0)
+	cur := base
+	model.clock = func() time.Time { return cur }
+
+	model.applyOutcome(0, ActionOutcome{Message: "copied", ClipArmed: true, ClipRemaining: 45, ClipTool: "wl-copy"})
+	if model.clip == nil {
+		t.Fatal("copy should arm the clipboard pill")
+	}
+	if !strings.Contains(model.View().Content, "clip clears in ~45s") {
+		t.Fatalf("status should show the armed pill:\n%s", model.View().Content)
+	}
+
+	// Halfway: pill counts down, no clear yet.
+	cur = base.Add(20 * time.Second)
+	updated, _ := model.Update(tickMsg{})
+	model = updated.(pickerModel)
+	if cleared {
+		t.Fatal("clipboard cleared too early")
+	}
+	if model.clip == nil || model.clipRemaining() != 25 {
+		t.Fatalf("pill should show ~25s, got %v", model.clipRemaining())
+	}
+
+	// Past expiry: auto-clear fires and disarms.
+	cur = base.Add(46 * time.Second)
+	updated, cmd := model.Update(tickMsg{})
+	model = updated.(pickerModel)
+	if model.clip != nil {
+		t.Fatal("clip should disarm at expiry")
+	}
+	if cmd == nil {
+		t.Fatal("expiry should issue the clear command")
+	}
+	cmd() // run the clear command
+	if !cleared {
+		t.Fatal("clipboard should auto-clear at zero")
+	}
+}
+
+func TestManualClearDisarmsClipPill(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.clip = &clipState{tool: "xclip", expires: model.now().Add(time.Minute)}
+
+	updated, _ := model.Update(ctrlKey('x'))
+	got := updated.(pickerModel)
+	if got.clip != nil {
+		t.Fatal("manual ^X clear should disarm the auto-clear pill")
+	}
+}
+
 // TestSecretModalHidesOnBlur pins C13: losing terminal focus blanks a revealed
 // secret in the picker, and regaining focus shows it again.
 func TestSecretModalHidesOnBlur(t *testing.T) {
