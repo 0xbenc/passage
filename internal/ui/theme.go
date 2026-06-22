@@ -47,6 +47,29 @@ func (p pickerTheme) search(value string) string {
 	return p.style(termstyle.RoleSearch, value)
 }
 
+// onBar renders value with the given foreground role composited over the
+// selection-bar background, as a single SGR open+reset. Styling each segment of
+// the cursor row this way (including padding) keeps the bar background
+// continuous across the whole row while the foreground still varies — so the
+// match highlight survives on the selected row. In NoColor mode it is plain
+// text (the caret is then the only selection cue).
+func (p pickerTheme) onBar(fg termstyle.Role, value string) string {
+	bar := p.theme.Codes[termstyle.RoleSelectedBar]
+	code := joinSGR(bar, p.theme.Codes[fg])
+	return termstyle.Apply(p.theme.NoColor, code, value)
+}
+
+func joinSGR(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + ";" + b
+	}
+}
+
 func (p pickerTheme) danger(value string) string {
 	return p.style(termstyle.RoleDanger, value)
 }

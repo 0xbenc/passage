@@ -178,7 +178,7 @@ func TestPickerFuzzyFilterCrossesDelimiter(t *testing.T) {
 func TestHighlightTitleStylesMatchedRunes(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	// "work | github": g at rune 7, h at rune 10.
-	title := highlightTitle("work | github", []int{7, 10}, 40, theme.primary, theme)
+	title := highlightTitle("work | github", []int{7, 10}, 40, theme.primary, theme.search)
 
 	if got := termstyle.Strip(title); got != "work | github" {
 		t.Fatalf("Strip(title) = %q, want plain title", got)
@@ -199,7 +199,7 @@ func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	// Width 8 keeps "work | " (7 cells) + "~"; the g/h at 7/10 are cut and
 	// must not be highlighted (nor index out of range).
-	title := highlightTitle("work | github", []int{7, 10}, 8, theme.primary, theme)
+	title := highlightTitle("work | github", []int{7, 10}, 8, theme.primary, theme.search)
 	if got := termstyle.Strip(title); got != "work | ~" {
 		t.Fatalf("Strip(title) = %q, want \"work | ~\"", got)
 	}
@@ -208,6 +208,46 @@ func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
 	}
 	if termstyle.VisibleWidth(title) > 8 {
 		t.Fatalf("title width %d exceeds 8", termstyle.VisibleWidth(title))
+	}
+}
+
+func TestSelectedRowIsFilledBar(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "work/github", Display: passstore.Display("work/github"), Pinned: true, HasMFA: true, LastUsed: 1},
+	}, PickOptions{}, termstyle.VividTheme())
+	model.cursor = 0
+	theme := pickerTheme{theme: model.theme}
+
+	line := model.renderEntryLine(model.entries[0], model.filtered[0].Positions, 0, 60, theme)
+	barCode := "\x1b[48;2;45;55;72" // RoleSelectedBar background in VividTheme
+
+	// The selection bar must cover the metadata column too, not just the
+	// title: the last styled segment (the timestamp) still carries the bar.
+	if !strings.Contains(line, barCode) {
+		t.Fatalf("selected row missing bar background: %q", line)
+	}
+	last := strings.LastIndex(line, barCode)
+	if reset := strings.LastIndex(line, "\x1b[0m"); reset < last {
+		t.Fatalf("bar background does not extend to the end of the row: %q", line)
+	}
+	// Markers render as tags.
+	if !strings.Contains(termstyle.Strip(line), "PIN MFA") {
+		t.Fatalf("selected row missing PIN/MFA tags: %q", termstyle.Strip(line))
+	}
+}
+
+func TestSelectedRowNoColorUsesCaret(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.cursor = 0
+	theme := pickerTheme{theme: model.theme}
+	line := model.renderEntryLine(model.entries[0], nil, 0, 60, theme)
+	if strings.Contains(line, "\x1b[") {
+		t.Fatalf("NoColor selected row must emit no escapes: %q", line)
+	}
+	if !strings.HasPrefix(line, "> ") {
+		t.Fatalf("NoColor selected row must lead with the caret: %q", line)
 	}
 }
 

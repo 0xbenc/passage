@@ -544,47 +544,72 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 }
 
 func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, visibleIndex int, width int, theme pickerTheme) string {
-	cursor := "  "
-	if visibleIndex == m.cursor {
-		cursor = theme.accent("> ")
+	selected := visibleIndex == m.cursor
+	caret := "  "
+	if selected {
+		caret = "> "
 	}
-	markers := []string{}
-	if entry.Pinned {
-		markers = append(markers, "*")
-	}
-	if entry.HasMFA {
-		markers = append(markers, "mfa")
-	}
-	markerText := strings.Join(markers, " ")
+	index := fmt.Sprintf("%3d ", visibleIndex+1)
+	markers := entryMarkers(entry) // "PIN MFA" plain, or ""
 	lastUsed := "never"
 	if entry.LastUsed > 0 {
 		lastUsed = time.Unix(entry.LastUsed, 0).Format("01-02 15:04")
 	}
-	if markerText != "" {
-		markerText = theme.accent(markerText)
+	rightPlain := strings.TrimSpace(markers + " " + lastUsed)
+	rightWidth := termstyle.VisibleWidth(rightPlain)
+	leftPrefixWidth := termstyle.VisibleWidth(caret) + termstyle.VisibleWidth(index)
+	leftWidth := max(12, width-leftPrefixWidth-rightWidth-2)
+
+	if selected {
+		// The whole row is a continuous selection bar: every segment —
+		// caret, index, title, padding, metadata — is rendered over the
+		// bar background, so the fill spans the full inner width including
+		// the metadata column, while the match highlight still shows.
+		bar := func(s string) string { return theme.style(termstyle.RoleSelectedBar, s) }
+		title := highlightTitle(entry.Display, positions, leftWidth,
+			func(s string) string { return theme.onBar(termstyle.RoleSelected, s) },
+			func(s string) string { return theme.onBar(termstyle.RoleSearch, s) })
+		if pad := leftWidth - termstyle.VisibleWidth(title); pad > 0 {
+			title += bar(strings.Repeat(" ", pad))
+		}
+		var right strings.Builder
+		if markers != "" {
+			right.WriteString(theme.onBar(termstyle.RoleAccent, markers))
+			right.WriteString(bar(" "))
+		}
+		right.WriteString(theme.onBar(termstyle.RoleMuted, lastUsed))
+		return theme.onBar(termstyle.RoleAccent, caret) + theme.onBar(termstyle.RoleMuted, index) + title + bar("  ") + right.String()
 	}
-	right := strings.TrimSpace(markerText + " " + theme.muted(lastUsed))
-	index := fmt.Sprintf("%3d ", visibleIndex+1)
-	leftPrefix := cursor + theme.muted(index)
-	leftWidth := max(12, width-termstyle.VisibleWidth(leftPrefix)-termstyle.VisibleWidth(right)-2)
-	base := theme.primary
-	if visibleIndex == m.cursor {
-		base = theme.selected
+
+	leftPrefix := caret + theme.muted(index)
+	title := highlightTitle(entry.Display, positions, leftWidth, theme.primary, theme.search)
+	right := ""
+	if markers != "" {
+		right = theme.accent(markers) + " "
 	}
-	title := highlightTitle(entry.Display, positions, leftWidth, base, theme)
-	if right == "" {
-		return leftPrefix + title
-	}
+	right += theme.muted(lastUsed)
 	return leftPrefix + termstyle.PadRight(title, leftWidth) + "  " + right
 }
 
+// entryMarkers returns the plain marker tags for an entry's pin/MFA state.
+func entryMarkers(entry passstore.Entry) string {
+	tags := make([]string, 0, 2)
+	if entry.Pinned {
+		tags = append(tags, "PIN")
+	}
+	if entry.HasMFA {
+		tags = append(tags, "MFA")
+	}
+	return strings.Join(tags, " ")
+}
+
 // highlightTitle truncates display to width cells and styles it: matched runes
-// (positions are rune indices into the full display) render in RoleSearch, the
-// rest in the base role (RolePrimary, or RoleSelected on the cursor row). Each
-// run is styled with a full Apply (open+reset), so styling can never bleed
-// across a run or past the truncation. With no positions it is byte-identical
-// to the previous single-Apply title, keeping the unfiltered view unchanged.
-func highlightTitle(display string, positions []int, width int, base func(string) string, theme pickerTheme) string {
+// (positions are rune indices into the full display) render with hl, the rest
+// with base. Each run is styled with a full Apply (open+reset), so styling can
+// never bleed across a run or past the truncation. With no positions it is
+// byte-identical to a single base-styled title, keeping the unfiltered view
+// unchanged.
+func highlightTitle(display string, positions []int, width int, base, hl func(string) string) string {
 	truncated := termstyle.Truncate(display, width)
 	if len(positions) == 0 {
 		return base(truncated)
@@ -596,21 +621,21 @@ func highlightTitle(display string, positions []int, width int, base func(string
 		hasMarker = true
 	}
 	runes := []rune(keptStr)
-	hl := make([]bool, len(runes))
+	matched := make([]bool, len(runes))
 	for _, p := range positions {
 		if p >= 0 && p < len(runes) {
-			hl[p] = true
+			matched[p] = true
 		}
 	}
 	var b strings.Builder
 	for i := 0; i < len(runes); {
 		j := i
-		for j < len(runes) && hl[j] == hl[i] {
+		for j < len(runes) && matched[j] == matched[i] {
 			j++
 		}
 		seg := string(runes[i:j])
-		if hl[i] {
-			b.WriteString(theme.search(seg))
+		if matched[i] {
+			b.WriteString(hl(seg))
 		} else {
 			b.WriteString(base(seg))
 		}

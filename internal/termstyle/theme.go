@@ -13,21 +13,22 @@ import (
 type Role string
 
 const (
-	RoleTitle      Role = "title"
-	RolePrimary    Role = "primary"
-	RoleSecondary  Role = "secondary"
-	RoleAccent     Role = "accent"
-	RoleMuted      Role = "muted"
-	RoleSubtle     Role = "subtle"
-	RoleForeground Role = "foreground"
-	RoleSelected   Role = "selected"
-	RoleBorder     Role = "border"
-	RoleSuccess    Role = "success"
-	RoleWarning    Role = "warning"
-	RoleDanger     Role = "danger"
-	RoleInfo       Role = "info"
-	RoleSearch     Role = "search"
-	RolePill       Role = "pill"
+	RoleTitle       Role = "title"
+	RolePrimary     Role = "primary"
+	RoleSecondary   Role = "secondary"
+	RoleAccent      Role = "accent"
+	RoleMuted       Role = "muted"
+	RoleSubtle      Role = "subtle"
+	RoleForeground  Role = "foreground"
+	RoleSelected    Role = "selected"
+	RoleSelectedBar Role = "selected_bar"
+	RoleBorder      Role = "border"
+	RoleSuccess     Role = "success"
+	RoleWarning     Role = "warning"
+	RoleDanger      Role = "danger"
+	RoleInfo        Role = "info"
+	RoleSearch      Role = "search"
+	RolePill        Role = "pill"
 )
 
 type Theme struct {
@@ -59,21 +60,22 @@ func TerminalTheme() Theme {
 	return Theme{
 		Name: "terminal",
 		Codes: map[Role]string{
-			RoleTitle:      "32",
-			RolePrimary:    "36",
-			RoleSecondary:  "34",
-			RoleAccent:     "33",
-			RoleMuted:      "2",
-			RoleSubtle:     "39",
-			RoleForeground: "39",
-			RoleSelected:   "39;4",
-			RoleBorder:     "1;32",
-			RoleSuccess:    "32",
-			RoleWarning:    "33",
-			RoleDanger:     "31",
-			RoleInfo:       "35",
-			RoleSearch:     "1;39",
-			RolePill:       "1;7",
+			RoleTitle:       "32",
+			RolePrimary:     "36",
+			RoleSecondary:   "34",
+			RoleAccent:      "33",
+			RoleMuted:       "2",
+			RoleSubtle:      "39",
+			RoleForeground:  "39",
+			RoleSelected:    "39;4",
+			RoleSelectedBar: "100",
+			RoleBorder:      "1;32",
+			RoleSuccess:     "32",
+			RoleWarning:     "33",
+			RoleDanger:      "31",
+			RoleInfo:        "35",
+			RoleSearch:      "1;39",
+			RolePill:        "1;7",
 		},
 	}
 }
@@ -82,21 +84,22 @@ func VividTheme() Theme {
 	return Theme{
 		Name: "vivid",
 		Codes: map[Role]string{
-			RoleTitle:      "1;38;2;96;221;255",
-			RolePrimary:    "1;38;2;96;221;255",
-			RoleSecondary:  "1;38;2;120;183;255",
-			RoleAccent:     "1;38;2;255;209;102",
-			RoleMuted:      "38;2;132;145;160",
-			RoleSubtle:     "38;2;58;69;87",
-			RoleForeground: "38;2;235;239;245",
-			RoleSelected:   "1;38;2;255;255;255",
-			RoleBorder:     "38;2;58;69;87",
-			RoleSuccess:    "1;38;2;134;239;172",
-			RoleWarning:    "1;38;2;255;209;102",
-			RoleDanger:     "1;38;2;255;151;112",
-			RoleInfo:       "1;38;2;214;160;255",
-			RoleSearch:     "1;38;2;255;255;255",
-			RolePill:       "1;38;2;25;30;38;48;2;96;221;255",
+			RoleTitle:       "1;38;2;96;221;255",
+			RolePrimary:     "1;38;2;96;221;255",
+			RoleSecondary:   "1;38;2;120;183;255",
+			RoleAccent:      "1;38;2;255;209;102",
+			RoleMuted:       "38;2;132;145;160",
+			RoleSubtle:      "38;2;58;69;87",
+			RoleForeground:  "38;2;235;239;245",
+			RoleSelected:    "1;38;2;255;255;255",
+			RoleSelectedBar: "48;2;45;55;72",
+			RoleBorder:      "38;2;58;69;87",
+			RoleSuccess:     "1;38;2;134;239;172",
+			RoleWarning:     "1;38;2;255;209;102",
+			RoleDanger:      "1;38;2;255;151;112",
+			RoleInfo:        "1;38;2;214;160;255",
+			RoleSearch:      "1;38;2;255;255;255",
+			RolePill:        "1;38;2;25;30;38;48;2;96;221;255",
 		},
 	}
 }
@@ -111,6 +114,7 @@ func Roles() []Role {
 		RoleSubtle,
 		RoleForeground,
 		RoleSelected,
+		RoleSelectedBar,
 		RoleBorder,
 		RoleSuccess,
 		RoleWarning,
@@ -442,27 +446,30 @@ func colorTokenCode(token string, background bool) (string, bool) {
 }
 
 var roleAliases = map[string]Role{
-	"title":      RoleTitle,
-	"primary":    RolePrimary,
-	"secondary":  RoleSecondary,
-	"accent":     RoleAccent,
-	"muted":      RoleMuted,
-	"subtle":     RoleSubtle,
-	"dim":        RoleSubtle,
-	"foreground": RoleForeground,
-	"fg":         RoleForeground,
-	"text":       RoleForeground,
-	"selected":   RoleSelected,
-	"selection":  RoleSelected,
-	"border":     RoleBorder,
-	"rule":       RoleBorder,
-	"success":    RoleSuccess,
-	"warning":    RoleWarning,
-	"danger":     RoleDanger,
-	"error":      RoleDanger,
-	"info":       RoleInfo,
-	"search":     RoleSearch,
-	"pill":       RolePill,
+	"title":         RoleTitle,
+	"primary":       RolePrimary,
+	"secondary":     RoleSecondary,
+	"accent":        RoleAccent,
+	"muted":         RoleMuted,
+	"subtle":        RoleSubtle,
+	"dim":           RoleSubtle,
+	"foreground":    RoleForeground,
+	"fg":            RoleForeground,
+	"text":          RoleForeground,
+	"selected":      RoleSelected,
+	"selection":     RoleSelected,
+	"selected_bar":  RoleSelectedBar,
+	"selection_bar": RoleSelectedBar,
+	"bar":           RoleSelectedBar,
+	"border":        RoleBorder,
+	"rule":          RoleBorder,
+	"success":       RoleSuccess,
+	"warning":       RoleWarning,
+	"danger":        RoleDanger,
+	"error":         RoleDanger,
+	"info":          RoleInfo,
+	"search":        RoleSearch,
+	"pill":          RolePill,
 }
 
 var styleTokenCodes = map[string]string{
