@@ -439,7 +439,16 @@ func loadThemeConfig(path string) (termstyle.ThemeConfig, string, error) {
 func formatThemeConfig(cfg termstyle.ThemeConfig) []byte {
 	var b strings.Builder
 	b.WriteString("# passage theme config\n")
-	b.WriteString("# Edit from the homepage with Ctrl-O.\n\n")
+	b.WriteString("# Edit with `passage theme` or from the homepage with Ctrl-O.\n\n")
+	// Persist the chosen base palette so `theme = vivid` survives a round-trip.
+	// Terminal is the implicit default, so it is left out to keep configs lean.
+	if base := strings.TrimSpace(cfg.BaseName); base != "" {
+		if t, ok := termstyle.BuiltinTheme(base); ok && t.Name != "terminal" {
+			b.WriteString("theme = ")
+			b.WriteString(t.Name)
+			b.WriteString("\n\n")
+		}
+	}
 	for _, role := range termstyle.Roles() {
 		spec := strings.TrimSpace(cfg.Specs[role])
 		if spec == "" {

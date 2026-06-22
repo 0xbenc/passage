@@ -324,6 +324,55 @@ func TestResolveThemeIgnoresDeprecatedThemeName(t *testing.T) {
 	}
 }
 
+// TestResolveThemeHonorsBaseName pins the theme *choice* contract: a
+// `theme = vivid` base line switches the starting palette to the truecolor
+// theme, role overrides still layer on top, and an unknown base name falls
+// back to the terminal palette instead of erroring.
+func TestResolveThemeHonorsBaseName(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return path
+	}
+
+	// Base vivid: primary becomes truecolor, not the terminal cyan "36".
+	vivid := write("vivid.conf", "theme = vivid\n")
+	theme, err := ResolveTheme(ThemeOptions{File: vivid, Env: []string{}, SkipDefaultFile: true})
+	if err != nil {
+		t.Fatalf("ResolveTheme(vivid) error: %v", err)
+	}
+	if got := theme.Style(RolePrimary, "prod"); !strings.Contains(got, "38;2;") {
+		t.Fatalf("vivid primary = %q, want truecolor base", got)
+	}
+
+	// Base vivid + a role override: the override wins, the rest stays vivid.
+	mixed := write("mixed.conf", "theme = vivid\nprimary = red\n")
+	theme, err = ResolveTheme(ThemeOptions{File: mixed, Env: []string{}, SkipDefaultFile: true})
+	if err != nil {
+		t.Fatalf("ResolveTheme(mixed) error: %v", err)
+	}
+	if got := theme.Style(RolePrimary, "prod"); !strings.Contains(got, "\x1b[31m") {
+		t.Fatalf("mixed primary = %q, want red override", got)
+	}
+	if got := theme.Style(RoleTitle, "prod"); !strings.Contains(got, "38;2;") {
+		t.Fatalf("mixed title = %q, want vivid base retained", got)
+	}
+
+	// Unknown base falls back to the terminal palette (no error, cyan primary).
+	unknown := write("unknown.conf", "theme = dracula\n")
+	theme, err = ResolveTheme(ThemeOptions{File: unknown, Env: []string{}, SkipDefaultFile: true})
+	if err != nil {
+		t.Fatalf("ResolveTheme(unknown) error: %v", err)
+	}
+	if got := theme.Style(RolePrimary, "prod"); !strings.Contains(got, "\x1b[36m") {
+		t.Fatalf("unknown-base primary = %q, want terminal cyan fallback", got)
+	}
+}
+
 func TestResolveThemeReportsInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "theme.conf")

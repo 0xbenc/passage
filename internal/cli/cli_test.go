@@ -7,7 +7,41 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/0xbenc/passage/internal/termstyle"
 )
+
+// TestFormatThemeConfigRoundTripsBase pins the theme-choice persistence
+// contract: a non-default base is written as `theme = <name>` and survives a
+// format→parse round-trip, while the implicit terminal default is omitted to
+// keep configs lean.
+func TestFormatThemeConfigRoundTripsBase(t *testing.T) {
+	cfg := termstyle.ThemeConfig{
+		BaseName: "vivid",
+		Codes:    map[termstyle.Role]string{termstyle.RolePrimary: "31"},
+		Specs:    map[termstyle.Role]string{termstyle.RolePrimary: "red"},
+	}
+	data := formatThemeConfig(cfg)
+	if !strings.Contains(string(data), "theme = vivid") {
+		t.Fatalf("formatted config missing base line:\n%s", data)
+	}
+	parsed, err := termstyle.ParseThemeConfig(data)
+	if err != nil {
+		t.Fatalf("re-parse error: %v", err)
+	}
+	if parsed.BaseName != "vivid" {
+		t.Fatalf("round-trip BaseName = %q, want vivid", parsed.BaseName)
+	}
+	if parsed.Specs[termstyle.RolePrimary] != "red" {
+		t.Fatalf("round-trip primary spec = %q, want red", parsed.Specs[termstyle.RolePrimary])
+	}
+
+	// Terminal (the default) is left implicit.
+	terminalCfg := termstyle.ThemeConfig{BaseName: "terminal"}
+	if got := string(formatThemeConfig(terminalCfg)); strings.Contains(got, "theme =") {
+		t.Fatalf("terminal base should be implicit, got:\n%s", got)
+	}
+}
 
 func TestFirstRunGuidanceForMissingStore(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-store-here")

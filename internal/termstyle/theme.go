@@ -156,8 +156,16 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 		}
 	}
 
-	theme := TerminalTheme().Normalized()
-	theme = theme.Normalized()
+	// Honor the config's base theme (`theme = vivid`). Unknown names fall
+	// back to the terminal palette rather than erroring, so a base written by
+	// a newer passage never hard-fails an older binary.
+	base := TerminalTheme()
+	if cfg.BaseName != "" {
+		if b, ok := BuiltinTheme(cfg.BaseName); ok {
+			base = b
+		}
+	}
+	theme := base.Normalized()
 	if len(cfg.Codes) > 0 {
 		theme.Name = "custom"
 		for role, code := range cfg.Codes {
