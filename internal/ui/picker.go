@@ -624,6 +624,14 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 		entrySlots--
 		end = min(len(m.filtered), start+entrySlots)
 	}
+	// Size the metadata column once for the visible window so every title
+	// starts at the same column and the timestamps align flush right.
+	metaWidth := 0
+	for vi := start; vi < end; vi++ {
+		entry := m.entries[m.filtered[vi].Index]
+		metaWidth = max(metaWidth, termstyle.VisibleWidth(entryRightPlain(entry, m.now())))
+	}
+	metaWidth = clamp(metaWidth, 0, max(0, width-16))
 	var lines []string
 	if start > 0 {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more above", start)))
@@ -631,7 +639,7 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 	for visibleIndex := start; visibleIndex < end; visibleIndex++ {
 		ranked := m.filtered[visibleIndex]
 		entry := m.entries[ranked.Index]
-		lines = append(lines, m.renderEntryLine(entry, ranked.Positions, visibleIndex, width, theme))
+		lines = append(lines, m.renderEntryLine(entry, ranked.Positions, visibleIndex, width, metaWidth, theme))
 	}
 	if end < len(m.filtered) {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more below", len(m.filtered)-end)))
@@ -682,7 +690,7 @@ func clampLines(lines []string, limit int) []string {
 	return lines
 }
 
-func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, visibleIndex int, width int, theme pickerTheme) string {
+func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, visibleIndex, width, metaWidth int, theme pickerTheme) string {
 	selected := visibleIndex == m.cursor
 	caret := "  "
 	if selected {
@@ -690,14 +698,14 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 	}
 	index := fmt.Sprintf("%3d ", visibleIndex+1)
 	markers := entryMarkers(entry) // "PIN MFA" plain, or ""
-	lastUsed := "never"
-	if entry.LastUsed > 0 {
-		lastUsed = time.Unix(entry.LastUsed, 0).Format("01-02 15:04")
-	}
-	rightPlain := strings.TrimSpace(markers + " " + lastUsed)
-	rightWidth := termstyle.VisibleWidth(rightPlain)
+	lastUsed := humanizeRelative(entry.LastUsed, m.now())
+	rightW := min(metaWidth, termstyle.VisibleWidth(strings.TrimSpace(markers+" "+lastUsed)))
+	leftPad := metaWidth - rightW
 	leftPrefixWidth := termstyle.VisibleWidth(caret) + termstyle.VisibleWidth(index)
-	leftWidth := max(12, width-leftPrefixWidth-rightWidth-2)
+	// metaWidth is clamped (in listLines) so this never floors; the metadata
+	// column is a stable width across rows, so titles align vertically and the
+	// timestamps sit flush right.
+	leftWidth := max(8, width-leftPrefixWidth-metaWidth-2)
 
 	if selected {
 		// The whole row is a continuous selection bar: every segment —
@@ -712,6 +720,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 			title += bar(strings.Repeat(" ", pad))
 		}
 		var right strings.Builder
+		right.WriteString(bar(strings.Repeat(" ", leftPad)))
 		if markers != "" {
 			right.WriteString(theme.onBar(termstyle.RoleAccent, markers))
 			right.WriteString(bar(" "))
@@ -722,12 +731,14 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 
 	leftPrefix := caret + theme.muted(index)
 	title := highlightTitle(entry.Display, positions, leftWidth, theme.primary, theme.search)
-	right := ""
+	var right strings.Builder
+	right.WriteString(strings.Repeat(" ", leftPad))
 	if markers != "" {
-		right = theme.accent(markers) + " "
+		right.WriteString(theme.accent(markers))
+		right.WriteString(" ")
 	}
-	right += theme.muted(lastUsed)
-	return leftPrefix + termstyle.PadRight(title, leftWidth) + "  " + right
+	right.WriteString(theme.muted(lastUsed))
+	return leftPrefix + termstyle.PadRight(title, leftWidth) + "  " + right.String()
 }
 
 // entryMarkers returns the plain marker tags for an entry's pin/MFA state.
@@ -740,6 +751,21 @@ func entryMarkers(entry passstore.Entry) string {
 		tags = append(tags, "MFA")
 	}
 	return strings.Join(tags, " ")
+}
+
+// entryRightPlain is the plain (unstyled) metadata column for an entry, used to
+// size the stable metadata column across the visible rows.
+func entryRightPlain(entry passstore.Entry, now time.Time) string {
+	return strings.TrimSpace(entryMarkers(entry) + " " + humanizeRelative(entry.LastUsed, now))
+}
+
+// formatRemaining renders a countdown's seconds, the single place "Ns" is
+// formatted so the reveal modal and the picker countdown never drift.
+func formatRemaining(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 // highlightTitle truncates display to width cells and styles it: matched runes

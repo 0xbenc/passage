@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strings"
 
@@ -101,7 +100,7 @@ func (m revealModel) View() tea.View {
 		}
 		if m.remaining > 0 {
 			body = append(body, "")
-			body = append(body, theme.warning(fmt.Sprintf("%ds remaining", m.remaining)))
+			body = append(body, theme.warning(formatRemaining(m.remaining)+" remaining"))
 		}
 	}
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{

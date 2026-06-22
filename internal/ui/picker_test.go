@@ -302,7 +302,7 @@ func TestSelectedRowIsFilledBar(t *testing.T) {
 	model.cursor = 0
 	theme := pickerTheme{theme: model.theme}
 
-	line := model.renderEntryLine(model.entries[0], model.filtered[0].Positions, 0, 60, theme)
+	line := model.renderEntryLine(model.entries[0], model.filtered[0].Positions, 0, 60, 12, theme)
 	barCode := "\x1b[48;2;45;55;72" // RoleSelectedBar background in VividTheme
 
 	// The selection bar must cover the metadata column too, not just the
@@ -326,7 +326,7 @@ func TestSelectedRowNoColorUsesCaret(t *testing.T) {
 	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
 	model.cursor = 0
 	theme := pickerTheme{theme: model.theme}
-	line := model.renderEntryLine(model.entries[0], nil, 0, 60, theme)
+	line := model.renderEntryLine(model.entries[0], nil, 0, 60, 12, theme)
 	if strings.Contains(line, "\x1b[") {
 		t.Fatalf("NoColor selected row must emit no escapes: %q", line)
 	}
