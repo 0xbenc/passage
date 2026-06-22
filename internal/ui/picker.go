@@ -143,6 +143,7 @@ type pickerModel struct {
 	storeRoot      string
 	message        string
 	messageErr     bool
+	messageExpires time.Time // when a transient notice fades; zero = persistent
 	noAltScreen    bool
 	width          int
 	height         int
@@ -296,6 +297,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.tick++
 		m.refreshSecretCountdown()
+		m.refreshMessage()
 		clearCmd := m.refreshClip()
 		if !m.tickActive() {
 			m.ticking = false
@@ -304,9 +306,9 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tickCmd(), clearCmd)
 	case clipClearedMsg:
 		if msg.err == nil {
-			m.message = "Clipboard auto-cleared."
-			m.messageErr = false
+			m.setNotice("Clipboard auto-cleared.", false)
 		}
+		return m, m.maybeStartTick()
 	case actionDoneMsg:
 		m.applyOutcome(msg.id, msg.outcome)
 		return m, m.maybeStartTick()
@@ -1006,7 +1008,38 @@ func (m pickerModel) tickActive() bool {
 	if m.busy != nil || m.clip != nil {
 		return true
 	}
-	return m.modal != nil && m.modal.secret && m.modal.remaining > 0
+	if m.modal != nil && m.modal.secret && m.modal.remaining > 0 {
+		return true
+	}
+	return !m.messageExpires.IsZero() && m.now().Before(m.messageExpires)
+}
+
+// noticeTTL is how long a transient action notice ("copied", an error) stays on
+// screen before it fades. Config feedback (theme warnings, the opening message)
+// is set directly and persists.
+const noticeTTL = 6 * time.Second
+
+// setNotice posts a transient, self-fading message — the single notice channel
+// the picker shows, so a stale "copied" never lingers under a later action.
+func (m *pickerModel) setNotice(text string, isErr bool) {
+	m.message = text
+	m.messageErr = isErr
+	if text == "" {
+		m.messageExpires = time.Time{}
+		return
+	}
+	m.messageExpires = m.now().Add(noticeTTL)
+}
+
+func (m *pickerModel) refreshMessage() {
+	if m.message == "" || m.messageExpires.IsZero() {
+		return
+	}
+	if !m.now().Before(m.messageExpires) {
+		m.message = ""
+		m.messageErr = false
+		m.messageExpires = time.Time{}
+	}
 }
 
 // maybeStartTick starts the tick loop if motion is needed and no loop is
@@ -1265,11 +1298,10 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.entries = append([]passstore.Entry(nil), out.Entries...)
 		m.applyFilter()
 	}
-	m.message = out.Message
-	m.messageErr = false
 	if out.Err != nil {
-		m.message = out.Err.Error()
-		m.messageErr = true
+		m.setNotice(out.Err.Error(), true)
+	} else {
+		m.setNotice(out.Message, false)
 	}
 	if out.ClipArmed && out.ClipRemaining > 0 {
 		m.clip = &clipState{

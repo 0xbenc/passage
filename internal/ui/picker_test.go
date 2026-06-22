@@ -201,6 +201,39 @@ func TestFilterCursorTracksQueryAndHidesOverModal(t *testing.T) {
 	}
 }
 
+// TestNoticeDecaysAfterTTL pins G4: a transient notice keeps the tick alive
+// and fades once its time-to-live elapses.
+func TestNoticeDecaysAfterTTL(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+	base := time.Unix(9000, 0)
+	cur := base
+	model.clock = func() time.Time { return cur }
+
+	model.applyOutcome(0, ActionOutcome{Message: "copied"})
+	if model.message != "copied" {
+		t.Fatal("notice should be set")
+	}
+	if !model.tickActive() {
+		t.Fatal("a live notice should keep the tick alive so it can decay")
+	}
+
+	cur = base.Add(3 * time.Second)
+	updated, _ := model.Update(tickMsg{})
+	model = updated.(pickerModel)
+	if model.message != "copied" {
+		t.Fatal("notice should persist before its TTL")
+	}
+
+	cur = base.Add(7 * time.Second)
+	updated, _ = model.Update(tickMsg{})
+	model = updated.(pickerModel)
+	if model.message != "" {
+		t.Fatalf("notice should fade after its TTL, got %q", model.message)
+	}
+}
+
 func TestMouseWheelMovesCursor(t *testing.T) {
 	model := newPickerModel(manyEntries(30), PickOptions{}, termstyle.TerminalTheme())
 	model.width = 80
