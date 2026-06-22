@@ -41,16 +41,6 @@ func VisibleWidth(value string) int {
 	return width
 }
 
-// cellWidth returns the terminal cell width of a single rune (0 for controls
-// and combining marks, 2 for wide runes), consistent with VisibleWidth.
-func cellWidth(r rune) int {
-	w := ansi.StringWidth(string(r))
-	if w < 0 {
-		return 0
-	}
-	return w
-}
-
 func Strip(value string) string {
 	var b strings.Builder
 	for i := 0; i < len(value); {
@@ -207,10 +197,10 @@ func PadRight(value string, width int) string {
 
 // Truncate shortens value to at most width visible cells, marking cut text
 // with a trailing "~". Like VisibleWidth and PadRight it is escape-aware:
-// escape sequences do not count toward the width and are never split, wide
-// runes are never split across the cut, and if the kept portion leaves SGR
-// styling active a reset is appended so styling cannot leak past the
-// truncation.
+// escape sequences do not count toward the width and are never split, whole
+// grapheme clusters (so an emoji-with-variation-selector is never split) are
+// the unit of cutting, and if the kept portion leaves SGR styling active a
+// reset is appended so styling cannot leak past the truncation.
 func Truncate(value string, width int) string {
 	return TruncateWith(value, width, "~")
 }
@@ -246,20 +236,22 @@ func TruncateWith(value string, width int, marker string) string {
 			i = next
 			continue
 		}
-		r, size := utf8.DecodeRuneInString(value[i:])
-		if size <= 0 {
+		// Consume one whole grapheme cluster, measured exactly as VisibleWidth
+		// (and the renderer) measure — so an emoji-with-variation-selector or
+		// any wide cluster is never split across the cut and the result's cell
+		// width never exceeds the budget. Zero-width clusters (combining marks,
+		// controls) ride along without cost.
+		cluster, w := ansi.FirstGraphemeCluster(value[i:], ansi.GraphemeWidth)
+		if len(cluster) == 0 {
 			i++
 			continue
 		}
-		// Budget in cells, never splitting a wide rune across the cut.
-		// Zero-width runes (combining marks) ride along without cost.
-		w := cellWidth(r)
 		if w > 0 && visible+w > keep {
 			break
 		}
-		b.WriteRune(r)
+		b.WriteString(cluster)
 		visible += w
-		i += size
+		i += len(cluster)
 	}
 	b.WriteString(marker)
 	if styled {

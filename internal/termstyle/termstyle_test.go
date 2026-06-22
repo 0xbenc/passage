@@ -157,6 +157,10 @@ func TestTruncate(t *testing.T) {
 		{"reset already kept", "\x1b[31mab\x1b[0mcdefgh", 4, "\x1b[31mab\x1b[0mc~"},
 		{"never splits sequence", "\x1b[38;5;196mxy0123456\x1b[0m", 3, "\x1b[38;5;196mxy~\x1b[0m"},
 		{"non sgr escape kept intact", "ab\x1b[2Kcdefghij", 4, "ab\x1b[2Kc~"},
+		// Grapheme-cluster safety: an emoji + variation selector (🛡️) is a
+		// single 2-cell cluster kept whole; here the marker leaves room for it
+		// plus two more cells.
+		{"emoji cluster with marker", "🛡️abcdef", 5, "🛡️ab~"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,6 +172,20 @@ func TestTruncate(t *testing.T) {
 				t.Fatalf("VisibleWidth(Truncate(%q, %d)) = %d, exceeds width", tc.input, tc.width, VisibleWidth(got))
 			}
 		})
+	}
+}
+
+// TestTruncateEmojiClusterNotSplit pins the grapheme-cluster cut: a 2-cell
+// emoji+VS16 is kept whole when it fits the budget and dropped whole when it
+// does not — never split into a lone base rune or a stray variation selector.
+func TestTruncateEmojiClusterNotSplit(t *testing.T) {
+	// Fits: budget 2, empty marker -> the whole shield, nothing more.
+	if got := TruncateWith("🛡️abc", 2, ""); got != "🛡️" {
+		t.Fatalf("TruncateWith(emoji, 2, \"\") = %q, want the whole shield", got)
+	}
+	// Does not fit a 2-cell cluster in 1 cell -> dropped whole, not split.
+	if got := TruncateWith("🛡️abc", 1, ""); VisibleWidth(got) > 1 {
+		t.Fatalf("TruncateWith(emoji, 1, \"\") = %q exceeds width", got)
 	}
 }
 
