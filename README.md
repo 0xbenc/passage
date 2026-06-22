@@ -14,8 +14,12 @@ the same `entry/mfa` convention used by the old script.
 
 ## Features
 
-- Full-screen terminal picker with filtering, pins, recents, and MFA badges.
+- Full-screen terminal picker with fuzzy filtering, match highlighting, pins,
+  recents, and MFA badges. A responsive detail pane appears on wide terminals,
+  and `?` opens a grouped key reference.
 - Password copy and reveal actions. Passwords are the first line of `pass show`.
+- Live TOTP countdown and a clipboard-armed status pill that auto-clears while
+  passage is open; secrets are blanked when the terminal loses focus.
 - Native SHA1 TOTP generation; `oathtool` is no longer required.
 - Old Bash TSV state migration from `bash-zoo/passage` and `bash-zoo/pass-browse`.
 - Scriptable commands with stable JSON envelopes.
@@ -89,7 +93,8 @@ passage doctor
 
 In the TUI:
 
-- Printable characters always type into the filter.
+- Printable characters fuzzy-filter the list; matches are highlighted and ranked.
+- `?` (with an empty filter): open the grouped key reference overlay
 - `enter`: default action, copy password or generate TOTP for an MFA-secret row
 - `ctrl+y`: copy password, or TOTP in MFA-only mode
 - `ctrl+r`: reveal password, or TOTP in MFA-only mode
@@ -98,10 +103,11 @@ In the TUI:
 - `ctrl+f`: toggle MFA-only view
 - `ctrl+o`: open theme editor
 - `ctrl+x`: clear clipboard
-- `ctrl+u`: unpin all
-- `ctrl+e`: clear recents
+- `ctrl+u`: unpin all (asks for confirmation)
+- `ctrl+e`: clear recents (asks for confirmation)
 - `ctrl+d`: doctor
 - `ctrl+k`: keys
+- mouse wheel scrolls and click selects (in the alternate screen)
 - `esc`, `ctrl+c`, or `ctrl+q`: quit
 
 ## Theme Editor
