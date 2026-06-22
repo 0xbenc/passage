@@ -149,6 +149,7 @@ type pickerModel struct {
 	saveTheme    ThemeSaveFunc
 	themeEditor  *themeEditorModel
 	glyphs       termstyle.GlyphSet
+	secretHidden bool // secret modal blanked because the terminal lost focus
 }
 
 type pickerBusy struct {
@@ -246,6 +247,14 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 		m.ensureVisible()
+	case tea.BlurMsg:
+		// Alt-tab away: blank a revealed secret so it is not left on screen
+		// for an unattended terminal. Defense-in-depth atop the countdown.
+		if m.modal != nil && m.modal.secret {
+			m.secretHidden = true
+		}
+	case tea.FocusMsg:
+		m.secretHidden = false
 	case tickMsg:
 		m.tick++
 		m.refreshSecretCountdown()
@@ -357,6 +366,9 @@ func (m pickerModel) View() tea.View {
 		Footer: spec.footer,
 	}))
 	view.AltScreen = !m.noAltScreen
+	// Ask the terminal to report focus so a revealed secret can be blanked
+	// when the user alt-tabs away.
+	view.ReportFocus = true
 	return view
 }
 
@@ -924,6 +936,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.messageErr = true
 	}
 	if out.Secret != "" {
+		m.secretHidden = false
 		lines := wrapSecret(out.Secret, max(20, m.width-8))
 		modal := &pickerModal{
 			title:     defaultString(out.SecretTitle, "Reveal"),
@@ -1022,6 +1035,14 @@ func (m pickerModel) busyElapsed() string {
 
 func (m pickerModel) modalLines(width int, theme pickerTheme) []string {
 	modal := m.modal
+	if modal.secret && m.secretHidden {
+		return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
+			Title:  modal.title,
+			Body:   []string{theme.muted("hidden — focus the terminal to show")},
+			Footer: modal.footer,
+			Danger: modal.danger,
+		}))
+	}
 	lines := modal.lines
 	if modal.scroll {
 		page := m.modalPageSize()

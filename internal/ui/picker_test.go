@@ -657,6 +657,54 @@ func TestPasswordRevealHasNoCountdown(t *testing.T) {
 	}
 }
 
+// TestSecretModalHidesOnBlur pins C13: losing terminal focus blanks a revealed
+// secret in the picker, and regaining focus shows it again.
+func TestSecretModalHidesOnBlur(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "work/github/mfa", Display: "work | github | mfa", HasMFA: true},
+	}, PickOptions{Glyphs: termstyle.ASCIIGlyphs()}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 70
+	model.height = 18
+	model.applyOutcome(0, ActionOutcome{SecretTitle: "TOTP", SecretKind: "totp", Secret: "482 915", SecretRemaining: 8, SecretPeriod: 30})
+
+	if !strings.Contains(model.View().Content, "482 915") {
+		t.Fatal("secret should be visible before blur")
+	}
+
+	blurred, _ := model.Update(tea.BlurMsg{})
+	model = blurred.(pickerModel)
+	if strings.Contains(model.View().Content, "482 915") {
+		t.Fatal("secret must be blanked while the terminal is unfocused")
+	}
+	if !strings.Contains(model.View().Content, "hidden") {
+		t.Fatal("blanked secret should show a hidden notice")
+	}
+
+	focused, _ := model.Update(tea.FocusMsg{})
+	model = focused.(pickerModel)
+	if !strings.Contains(model.View().Content, "482 915") {
+		t.Fatal("secret should reappear when focus returns")
+	}
+}
+
+func TestRevealRedactsBeforeQuit(t *testing.T) {
+	m := revealModel{title: "Reveal", secret: "hunter2", kind: "password", width: 70}
+	if !strings.Contains(m.View().Content, "hunter2") {
+		t.Fatal("secret should be visible initially")
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("a key should quit the reveal")
+	}
+	rm := updated.(revealModel)
+	if strings.Contains(rm.View().Content, "hunter2") {
+		t.Fatal("final frame must not contain the secret (redacted before quit)")
+	}
+	if !strings.Contains(rm.View().Content, "cleared") {
+		t.Fatal("redacted frame should show a cleared notice")
+	}
+}
+
 // TestPickerTickGatedToLiveState pins the C9 contract: a tickMsg keeps the
 // loop alive only while a busy action or live secret countdown is on screen,
 // and stops (returns a nil command) the instant neither is.
