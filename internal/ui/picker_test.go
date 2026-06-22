@@ -107,7 +107,7 @@ func TestPickerPrintableTextFilters(t *testing.T) {
 	if got.query != "b" {
 		t.Fatalf("query = %q, want b", got.query)
 	}
-	if len(got.filtered) != 1 || got.entries[got.filtered[0]].Path != "beta" {
+	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "beta" {
 		t.Fatalf("filtered = %#v", got.filtered)
 	}
 }
@@ -158,6 +158,58 @@ func TestPickerViewUsesWorkflowShell(t *testing.T) {
 	}
 }
 
+func TestPickerFuzzyFilterCrossesDelimiter(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "work/github/token", Display: passstore.Display("work/github/token")},
+		{Path: "work/aws/key", Display: passstore.Display("work/aws/key")},
+	}, PickOptions{}, termstyle.TerminalTheme())
+
+	for _, ch := range []string{"g", "h"} {
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: ch}))
+		model = updated.(pickerModel)
+	}
+
+	if len(model.filtered) != 1 || model.entries[model.filtered[0].Index].Path != "work/github/token" {
+		t.Fatalf("fuzzy gh filtered = %#v, want only github", model.filtered)
+	}
+}
+
+func TestHighlightTitleStylesMatchedRunes(t *testing.T) {
+	theme := pickerTheme{theme: termstyle.TerminalTheme()}
+	// "work | github": g at rune 7, h at rune 10.
+	title := highlightTitle("work | github", []int{7, 10}, 40, theme.primary, theme)
+
+	if got := termstyle.Strip(title); got != "work | github" {
+		t.Fatalf("Strip(title) = %q, want plain title", got)
+	}
+	searchOpen := "\x1b[1;39m" // RoleSearch in TerminalTheme
+	if !strings.Contains(title, searchOpen+"g") {
+		t.Fatalf("title does not highlight 'g' with RoleSearch: %q", title)
+	}
+	if !strings.Contains(title, searchOpen+"h") {
+		t.Fatalf("title does not highlight 'h' with RoleSearch: %q", title)
+	}
+	if termstyle.VisibleWidth(title) != termstyle.VisibleWidth("work | github") {
+		t.Fatalf("highlighted width %d != plain width", termstyle.VisibleWidth(title))
+	}
+}
+
+func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
+	theme := pickerTheme{theme: termstyle.TerminalTheme()}
+	// Width 8 keeps "work | " (7 cells) + "~"; the g/h at 7/10 are cut and
+	// must not be highlighted (nor index out of range).
+	title := highlightTitle("work | github", []int{7, 10}, 8, theme.primary, theme)
+	if got := termstyle.Strip(title); got != "work | ~" {
+		t.Fatalf("Strip(title) = %q, want \"work | ~\"", got)
+	}
+	if strings.Contains(title, "\x1b[1;39m") {
+		t.Fatalf("truncated-away matches must not be highlighted: %q", title)
+	}
+	if termstyle.VisibleWidth(title) > 8 {
+		t.Fatalf("title width %d exceeds 8", termstyle.VisibleWidth(title))
+	}
+}
+
 func TestPickerCtrlHotkeysRunActions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -205,7 +257,7 @@ func TestPickerCtrlFTogglesMFAOnly(t *testing.T) {
 	if !got.mfaOnly {
 		t.Fatal("mfaOnly = false, want true")
 	}
-	if len(got.filtered) != 1 || got.entries[got.filtered[0]].Path != "alpha" {
+	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "alpha" {
 		t.Fatalf("filtered = %#v", got.filtered)
 	}
 }

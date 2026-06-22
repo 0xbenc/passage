@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0xbenc/passage/internal/fuzzy"
 	"github.com/0xbenc/passage/internal/procutil"
 	"github.com/0xbenc/passage/internal/state"
 )
@@ -158,6 +159,76 @@ func FilterEntries(entries []Entry, filter string, mfaOnly bool) []Entry {
 			}
 		}
 		out = append(out, entry)
+	}
+	return out
+}
+
+// Ranked is one entry surviving a fuzzy filter: its index into the input
+// slice, the match score, and the matched rune positions within the entry's
+// Display string (nil when the entry matched only via its Path). It is the
+// single ranking primitive shared by the interactive picker and the
+// single-match auto-run path, so the two can never disagree about which
+// entries a filter selects — important for a password manager, where a
+// divergence could auto-act on an entry the picker would not have surfaced.
+type Ranked struct {
+	Index     int
+	Score     int
+	Positions []int
+}
+
+// Rank filters entries by a fuzzy query and orders the survivors. An empty
+// filter keeps every (mfa-eligible) entry in the input order, preserving the
+// store's pin/recency ordering. A non-empty filter keeps only fuzzy matches,
+// ordered by: pinned first, then score, then recency, then original order.
+// Positions index into Display so a caller can highlight the matched runes of
+// the visible title.
+func Rank(entries []Entry, filter string, mfaOnly bool) []Ranked {
+	filter = strings.TrimSpace(filter)
+	out := make([]Ranked, 0, len(entries))
+	for i, entry := range entries {
+		if mfaOnly && !entry.HasMFA {
+			continue
+		}
+		if filter == "" {
+			out = append(out, Ranked{Index: i})
+			continue
+		}
+		dispRes, dispOK := fuzzy.Match(filter, entry.Display)
+		pathRes, pathOK := fuzzy.Match(filter, entry.Path)
+		if !dispOK && !pathOK {
+			continue
+		}
+		ranked := Ranked{Index: i}
+		matched := false
+		if dispOK {
+			matched = true
+			ranked.Score = dispRes.Score
+			ranked.Positions = dispRes.Positions
+		}
+		if pathOK && (!matched || pathRes.Score > ranked.Score) {
+			ranked.Score = pathRes.Score
+			// Highlight only the visible Display; if the entry matched
+			// solely through its raw Path there are no display positions.
+			if !dispOK {
+				ranked.Positions = nil
+			}
+		}
+		out = append(out, ranked)
+	}
+	if filter != "" {
+		sort.SliceStable(out, func(a, b int) bool {
+			ea, eb := entries[out[a].Index], entries[out[b].Index]
+			if ea.Pinned != eb.Pinned {
+				return ea.Pinned
+			}
+			if out[a].Score != out[b].Score {
+				return out[a].Score > out[b].Score
+			}
+			if ea.LastUsed != eb.LastUsed {
+				return ea.LastUsed > eb.LastUsed
+			}
+			return out[a].Index < out[b].Index
+		})
 	}
 	return out
 }

@@ -236,10 +236,13 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 	// run the default action directly (copy, or TOTP for MFA), matching what
 	// pressing enter on that lone entry would do.
 	if filter != "" {
-		if matches := passstore.FilterEntries(rt.entries, filter, mfaOnly); len(matches) == 1 {
+		// Use the same fuzzy Rank the picker uses, so "exactly one match"
+		// means the same thing here as on screen — the auto-run can only
+		// fire on an entry the picker would have shown alone.
+		if matches := passstore.Rank(rt.entries, filter, mfaOnly); len(matches) == 1 {
 			rt.store.Stdin = os.Stdin
 			rt.store.Stderr = r.stderr
-			return r.runAutoAction(ctx, rt, matches[0], mfaOnly, flags)
+			return r.runAutoAction(ctx, rt, rt.entries[matches[0].Index], mfaOnly, flags)
 		}
 	}
 	themePath, themeConfig, themeWarning, err := r.loadThemeEditorConfig(flags)

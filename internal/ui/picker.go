@@ -108,14 +108,14 @@ func Pick(ctx context.Context, entries []passstore.Entry, opts PickOptions) (Pic
 		MFAOnly: picker.mfaOnly,
 	}
 	if picker.selected >= 0 && picker.selected < len(picker.filtered) {
-		result.Entry = picker.entries[picker.filtered[picker.selected]]
+		result.Entry = picker.entries[picker.filtered[picker.selected].Index]
 	}
 	return result, nil
 }
 
 type pickerModel struct {
 	entries      []passstore.Entry
-	filtered     []int
+	filtered     []passstore.Ranked
 	cursor       int
 	scroll       int
 	query        string
@@ -436,8 +436,9 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more above", start)))
 	}
 	for visibleIndex := start; visibleIndex < end; visibleIndex++ {
-		entry := m.entries[m.filtered[visibleIndex]]
-		lines = append(lines, m.renderEntryLine(entry, visibleIndex, width, theme))
+		ranked := m.filtered[visibleIndex]
+		entry := m.entries[ranked.Index]
+		lines = append(lines, m.renderEntryLine(entry, ranked.Positions, visibleIndex, width, theme))
 	}
 	if end < len(m.filtered) {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more below", len(m.filtered)-end)))
@@ -445,7 +446,7 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 	return lines
 }
 
-func (m pickerModel) renderEntryLine(entry passstore.Entry, visibleIndex int, width int, theme pickerTheme) string {
+func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, visibleIndex int, width int, theme pickerTheme) string {
 	cursor := "  "
 	if visibleIndex == m.cursor {
 		cursor = theme.accent("> ")
@@ -469,34 +470,66 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, visibleIndex int, wi
 	index := fmt.Sprintf("%3d ", visibleIndex+1)
 	leftPrefix := cursor + theme.muted(index)
 	leftWidth := max(12, width-termstyle.VisibleWidth(leftPrefix)-termstyle.VisibleWidth(right)-2)
-	title := termstyle.Truncate(entry.Display, leftWidth)
+	base := theme.primary
 	if visibleIndex == m.cursor {
-		title = theme.selected(title)
-	} else {
-		title = theme.primary(title)
+		base = theme.selected
 	}
+	title := highlightTitle(entry.Display, positions, leftWidth, base, theme)
 	if right == "" {
 		return leftPrefix + title
 	}
 	return leftPrefix + termstyle.PadRight(title, leftWidth) + "  " + right
 }
 
-func (m *pickerModel) applyFilter() {
-	m.filtered = m.filtered[:0]
-	filter := strings.ToLower(strings.TrimSpace(m.query))
-	for i, entry := range m.entries {
-		if m.mfaOnly && !entry.HasMFA {
-			continue
-		}
-		if filter != "" {
-			path := strings.ToLower(entry.Path)
-			display := strings.ToLower(entry.Display)
-			if !strings.Contains(path, filter) && !strings.Contains(display, filter) {
-				continue
-			}
-		}
-		m.filtered = append(m.filtered, i)
+// highlightTitle truncates display to width cells and styles it: matched runes
+// (positions are rune indices into the full display) render in RoleSearch, the
+// rest in the base role (RolePrimary, or RoleSelected on the cursor row). Each
+// run is styled with a full Apply (open+reset), so styling can never bleed
+// across a run or past the truncation. With no positions it is byte-identical
+// to the previous single-Apply title, keeping the unfiltered view unchanged.
+func highlightTitle(display string, positions []int, width int, base func(string) string, theme pickerTheme) string {
+	truncated := termstyle.Truncate(display, width)
+	if len(positions) == 0 {
+		return base(truncated)
 	}
+	keptStr := truncated
+	hasMarker := false
+	if termstyle.VisibleWidth(display) > width && strings.HasSuffix(truncated, "~") {
+		keptStr = strings.TrimSuffix(truncated, "~")
+		hasMarker = true
+	}
+	runes := []rune(keptStr)
+	hl := make([]bool, len(runes))
+	for _, p := range positions {
+		if p >= 0 && p < len(runes) {
+			hl[p] = true
+		}
+	}
+	var b strings.Builder
+	for i := 0; i < len(runes); {
+		j := i
+		for j < len(runes) && hl[j] == hl[i] {
+			j++
+		}
+		seg := string(runes[i:j])
+		if hl[i] {
+			b.WriteString(theme.search(seg))
+		} else {
+			b.WriteString(base(seg))
+		}
+		i = j
+	}
+	if hasMarker {
+		b.WriteString(base("~"))
+	}
+	return b.String()
+}
+
+func (m *pickerModel) applyFilter() {
+	// Rank is the single source of truth shared with the CLI auto-run path,
+	// so a filter that the picker treats as one match is the same one the
+	// auto-run path would act on.
+	m.filtered = passstore.Rank(m.entries, m.query, m.mfaOnly)
 	if len(m.filtered) == 0 {
 		m.cursor = 0
 		m.scroll = 0
@@ -765,7 +798,7 @@ func (m pickerModel) selectedEntry() (passstore.Entry, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.filtered) {
 		return passstore.Entry{}, false
 	}
-	return m.entries[m.filtered[m.cursor]], true
+	return m.entries[m.filtered[m.cursor].Index], true
 }
 
 func (m pickerModel) finish(action Action) pickerModel {

@@ -43,6 +43,10 @@ func (p pickerTheme) accent(value string) string {
 	return p.style(termstyle.RoleAccent, value)
 }
 
+func (p pickerTheme) search(value string) string {
+	return p.style(termstyle.RoleSearch, value)
+}
+
 func (p pickerTheme) danger(value string) string {
 	return p.style(termstyle.RoleDanger, value)
 }
