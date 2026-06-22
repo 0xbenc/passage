@@ -68,6 +68,28 @@ func TestConsecutiveOutranksSplit(t *testing.T) {
 	}
 }
 
+func TestRelevanceGate(t *testing.T) {
+	// Scattered subsequence: relevant=false. Contiguous/boundary: relevant=true.
+	scattered, _ := Match("redis", "occpw | internet | midwest0 | wifi-eth | password")
+	if Relevant(scattered, len("redis")) {
+		t.Fatalf("scattered redis (score %d) should not be relevant", scattered.Score)
+	}
+	for _, tc := range []struct{ q, c string }{
+		{"redis", "occdev | proxmox | mdw0 | vms | redis | password"},
+		{"gh", "work | github | token"},
+		{"occredis", "occdev | proxmox | mdw0 | vms | redis | password"},
+	} {
+		r, _ := Match(tc.q, tc.c)
+		if !Relevant(r, len([]rune(tc.q))) {
+			t.Fatalf("legit match %q in %q (score %d) should be relevant", tc.q, tc.c, r.Score)
+		}
+	}
+	// Empty query is always relevant.
+	if !Relevant(Result{}, 0) {
+		t.Fatal("empty query should be relevant")
+	}
+}
+
 func TestEarlierBoundaryRankingForHost(t *testing.T) {
 	// A realistic ranking expectation: "gh" prefers the github host whose
 	// match sits right after a delimiter over an incidental scatter.

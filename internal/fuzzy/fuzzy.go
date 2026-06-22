@@ -38,11 +38,30 @@ const (
 	bonusFirstCharMultiplier = 2
 )
 
+// MinScorePerRune is the average score a match must reach per query rune to be
+// considered *relevant* (as opposed to merely a valid subsequence). It exists
+// because pure subsequence matching is too lenient: a short query like "redis"
+// matches a long unrelated path whose letters happen to appear scattered
+// across it (inte[r]net mi[d]w[e]st w[i]fi pa[s]sword). Such matches are
+// gap-dominated and score far below a contiguous or word-boundary match.
+//
+// Tuned against scoreMatch (16): measured boundary/consecutive matches score
+// ~17-26 per rune; scattered ones ~7-9. 12 sits cleanly between, with margin
+// on both sides.
+const MinScorePerRune = 12
+
 // Result is a successful match: its score and the ascending rune indices in
 // the candidate that the query matched.
 type Result struct {
 	Score     int
 	Positions []int
+}
+
+// Relevant reports whether a match clears the relevance threshold for a query
+// of the given rune length, filtering out scattered subsequence matches while
+// keeping contiguous and word-boundary ones. An empty query is always relevant.
+func Relevant(r Result, queryLen int) bool {
+	return queryLen <= 0 || r.Score >= queryLen*MinScorePerRune
 }
 
 type charClass int

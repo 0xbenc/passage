@@ -193,8 +193,14 @@ func Rank(entries []Entry, filter string, mfaOnly bool) []Ranked {
 			out = append(out, Ranked{Index: i})
 			continue
 		}
+		// Gate on relevance, not just subsequence membership, so a query does
+		// not surface entries whose letters merely appear scattered across the
+		// path with large gaps.
+		qlen := len([]rune(filter))
 		dispRes, dispOK := fuzzy.Match(filter, entry.Display)
+		dispOK = dispOK && fuzzy.Relevant(dispRes, qlen)
 		pathRes, pathOK := fuzzy.Match(filter, entry.Path)
+		pathOK = pathOK && fuzzy.Relevant(pathRes, qlen)
 		if !dispOK && !pathOK {
 			continue
 		}

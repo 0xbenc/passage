@@ -44,6 +44,37 @@ func TestRankFuzzyCrossesDelimiter(t *testing.T) {
 	}
 }
 
+func TestRankRejectsScatteredSubsequence(t *testing.T) {
+	entries := []Entry{
+		{Path: "occdev/proxmox/mdw0/vms/redis/password", Display: Display("occdev/proxmox/mdw0/vms/redis/password")},
+		{Path: "occpw/internet/midwest0/wifi-eth/password", Display: Display("occpw/internet/midwest0/wifi-eth/password")},
+		{Path: "occpw/internet/midwest0/wifi-eth/device_access_code", Display: Display("occpw/internet/midwest0/wifi-eth/device_access_code")},
+	}
+	// "redis" is a literal segment of entry 1 but only a scattered subsequence
+	// of entries 2 and 3 — those must not match.
+	if got := rankedPaths(entries, "redis", false); !reflect.DeepEqual(got, []string{"occdev/proxmox/mdw0/vms/redis/password"}) {
+		t.Fatalf("redis matched %v, want only the real redis entry", got)
+	}
+}
+
+func TestRankKeepsLegitMatches(t *testing.T) {
+	entries := []Entry{
+		{Path: "work/github/token", Display: Display("work/github/token")},
+		{Path: "occdev/proxmox/mdw0/vms/redis/password", Display: Display("occdev/proxmox/mdw0/vms/redis/password")},
+	}
+	// Short boundary match, and a longer query that legitimately spans
+	// delimiters, must both survive the relevance gate.
+	if got := rankedPaths(entries, "gh", false); len(got) != 1 || got[0] != "work/github/token" {
+		t.Fatalf("gh -> %v, want github", got)
+	}
+	if got := rankedPaths(entries, "vmsredis", false); len(got) != 1 || got[0] != "occdev/proxmox/mdw0/vms/redis/password" {
+		t.Fatalf("vmsredis -> %v, want the redis entry", got)
+	}
+	if got := rankedPaths(entries, "occredis", false); len(got) != 1 || got[0] != "occdev/proxmox/mdw0/vms/redis/password" {
+		t.Fatalf("occredis -> %v, want the redis entry", got)
+	}
+}
+
 func TestRankPinnedFirst(t *testing.T) {
 	entries := []Entry{
 		{Path: "alpha/site", Display: Display("alpha/site")},
