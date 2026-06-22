@@ -139,6 +139,7 @@ type pickerModel struct {
 	runAction    ActionRunner
 	busy         *pickerBusy
 	modal        *pickerModal
+	confirm      *pickerConfirm
 	actionSeq    int
 	activeID     int
 	tick         int  // animation frame counter, advanced by tickMsg
@@ -159,6 +160,14 @@ type pickerBusy struct {
 	cancel    context.CancelFunc
 	canceling bool
 	started   time.Time
+}
+
+// pickerConfirm is a pending destructive action awaiting a y/esc confirmation,
+// so a single chord can no longer wipe curated state (pins / recents).
+type pickerConfirm struct {
+	action Action
+	prompt string
+	detail string
 }
 
 type pickerModal struct {
@@ -279,6 +288,9 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != nil {
 			return m.updateModal(key)
 		}
+		if m.confirm != nil {
+			return m.updateConfirm(key)
+		}
 		switch key {
 		case "ctrl+c", "esc", "ctrl+q":
 			m.action = ActionQuit
@@ -323,9 +335,9 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+x":
 			return m.trigger(ActionClearClipboard)
 		case "ctrl+u":
-			return m.trigger(ActionClearPins)
+			return m.startConfirm(ActionClearPins), nil
 		case "ctrl+e":
-			return m.trigger(ActionClearRecents)
+			return m.startConfirm(ActionClearRecents), nil
 		case "ctrl+d":
 			return m.trigger(ActionDoctor)
 		case "ctrl+k":
@@ -430,6 +442,10 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 	if m.modal != nil {
 		tail = append(tail, "")
 		tail = append(tail, m.modalLines(bodyWidth, theme)...)
+	}
+	if m.confirm != nil {
+		tail = append(tail, "")
+		tail = append(tail, m.confirmLines(bodyWidth, theme)...)
 	}
 	listHeight := max(1, m.height-pickerShellStructuralLines(footer)-len(header)-len(tail))
 	return layoutSpec{
@@ -914,6 +930,67 @@ func (m pickerModel) updateModal(key string) (pickerModel, tea.Cmd) {
 	}
 	m.modal = nil
 	return m, nil
+}
+
+func (m pickerModel) startConfirm(action Action) pickerModel {
+	prompt, detail := m.confirmText(action)
+	m.confirm = &pickerConfirm{action: action, prompt: prompt, detail: detail}
+	m.message = ""
+	m.messageErr = false
+	return m
+}
+
+func (m pickerModel) updateConfirm(key string) (pickerModel, tea.Cmd) {
+	action := m.confirm.action
+	switch key {
+	case "ctrl+c", "ctrl+q":
+		m.action = ActionQuit
+		return m, tea.Quit
+	case "y", "Y", "enter":
+		m.confirm = nil
+		return m.trigger(action)
+	default:
+		// esc, n, or any other key cancels — curated state is never wiped
+		// without an explicit yes.
+		m.confirm = nil
+		m.message = "Cancelled."
+		m.messageErr = false
+		return m, nil
+	}
+}
+
+func (m pickerModel) confirmText(action Action) (string, string) {
+	switch action {
+	case ActionClearPins:
+		n := 0
+		for _, e := range m.entries {
+			if e.Pinned {
+				n++
+			}
+		}
+		suffix := "s"
+		if n == 1 {
+			suffix = ""
+		}
+		return "Clear all pins?", fmt.Sprintf("removes %d pin%s", n, suffix)
+	case ActionClearRecents:
+		return "Clear recents?", "forgets last-used times"
+	default:
+		return "Proceed?", ""
+	}
+}
+
+func (m pickerModel) confirmLines(width int, theme pickerTheme) []string {
+	body := []string{theme.warning(m.confirm.prompt)}
+	if m.confirm.detail != "" {
+		body = append(body, "", theme.muted(m.confirm.detail))
+	}
+	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
+		Title:  "confirm",
+		Body:   body,
+		Footer: "y confirm   esc cancel",
+		Danger: true,
+	}))
 }
 
 func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {

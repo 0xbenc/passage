@@ -277,8 +277,6 @@ func TestPickerCtrlHotkeysRunActions(t *testing.T) {
 		{name: "totp", key: ctrlKey('t'), action: ActionTOTP},
 		{name: "pin", key: ctrlKey('p'), action: ActionTogglePin},
 		{name: "clear clipboard", key: ctrlKey('x'), action: ActionClearClipboard},
-		{name: "unpin all", key: ctrlKey('u'), action: ActionClearPins},
-		{name: "clear recents", key: ctrlKey('e'), action: ActionClearRecents},
 		{name: "doctor", key: ctrlKey('d'), action: ActionDoctor},
 		{name: "keys", key: ctrlKey('k'), action: ActionKeys},
 		{name: "quit ctrl-c", key: ctrlKey('c'), action: ActionQuit},
@@ -654,6 +652,51 @@ func TestPasswordRevealHasNoCountdown(t *testing.T) {
 	}
 	if !model.modal.expires.IsZero() {
 		t.Fatal("password reveal must not have a countdown")
+	}
+}
+
+// TestDestructiveClearsRequireConfirm pins C15: ^U/^E open a confirm strip
+// instead of wiping curated state, 'y' runs the action, esc cancels.
+func TestDestructiveClearsRequireConfirm(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		key    tea.KeyPressMsg
+		action Action
+	}{
+		{"clear pins", ctrlKey('u'), ActionClearPins},
+		{"clear recents", ctrlKey('e'), ActionClearRecents},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newPickerModel([]passstore.Entry{
+				{Path: "alpha", Display: "alpha", Pinned: true},
+			}, PickOptions{}, termstyle.TerminalTheme())
+
+			updated, _ := model.Update(tc.key)
+			got := updated.(pickerModel)
+			if got.confirm == nil {
+				t.Fatal("destructive clear should open a confirm strip")
+			}
+			if got.action != ActionNone {
+				t.Fatalf("action = %q before confirm, want none", got.action)
+			}
+
+			// esc cancels without acting.
+			cancelled, _ := got.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+			gotc := cancelled.(pickerModel)
+			if gotc.confirm != nil || gotc.action != ActionNone {
+				t.Fatalf("esc should cancel: confirm=%v action=%q", gotc.confirm, gotc.action)
+			}
+
+			// y confirms and runs the action (headless: sets action + quits).
+			updated, _ = got.Update(tea.KeyPressMsg(tea.Key{Text: "y"}))
+			gy := updated.(pickerModel)
+			if gy.confirm != nil {
+				t.Fatal("confirm should be cleared after y")
+			}
+			if gy.action != tc.action {
+				t.Fatalf("action after confirm = %q, want %q", gy.action, tc.action)
+			}
+		})
 	}
 }
 
