@@ -150,12 +150,55 @@ func TestPickerViewUsesWorkflowShell(t *testing.T) {
 		"│ 1 entries",
 		"│ /filter",
 		"├",
-		"^O theme",
+		"? keys",
 		"╰",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("view = %q, want substring %q", text, want)
 		}
+	}
+}
+
+func TestQuestionMarkOpensHelpOverlay(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
+	model.width = 72
+	model.height = 24
+
+	// "?" with an empty filter opens the overlay.
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
+	got := updated.(pickerModel)
+	if !got.help {
+		t.Fatal("\"?\" with empty filter should open the help overlay")
+	}
+	text := termstyle.Strip(got.View().Content)
+	for _, want := range []string{"NAVIGATE", "ACTIONS", "clear pins", "theme editor"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help overlay missing %q:\n%s", want, text)
+		}
+	}
+
+	// Any key closes it.
+	closed, _ := got.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	if closed.(pickerModel).help {
+		t.Fatal("a key should close the help overlay")
+	}
+}
+
+func TestQuestionMarkFiltersWhenQueryNonEmpty(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "a?b", Display: "a?b"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "a"}))
+	model = updated.(pickerModel)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
+	got := updated.(pickerModel)
+	if got.help {
+		t.Fatal("\"?\" with a non-empty filter must type into the filter, not open help")
+	}
+	if got.query != "a?" {
+		t.Fatalf("query = %q, want \"a?\"", got.query)
 	}
 }
 

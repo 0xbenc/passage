@@ -163,6 +163,7 @@ type pickerModel struct {
 	themeEditor    *themeEditorModel
 	glyphs         termstyle.GlyphSet
 	secretHidden   bool // secret modal blanked because the terminal lost focus
+	help           bool // the ? key reference overlay is open
 	clip           *clipState
 	clearClipboard func(context.Context) error
 }
@@ -312,6 +313,14 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.themeEditor != nil {
 			return m.updateThemeEditor(msg, key)
 		}
+		if m.help {
+			if key == "ctrl+c" || key == "ctrl+q" {
+				m.action = ActionQuit
+				return m, tea.Quit
+			}
+			m.help = false
+			return m, nil
+		}
 		if m.busy != nil {
 			return m.updateBusy(key)
 		}
@@ -374,6 +383,12 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+k":
 			return m.trigger(ActionKeys)
 		default:
+			// "?" opens the key reference only when the filter is empty, so a
+			// path containing "?" can still be typed into a non-empty filter.
+			if msg.Text == "?" && m.query == "" {
+				m.help = true
+				return m, nil
+			}
 			if safeTextInput(msg.Text) && !isControlKey(key) {
 				m.query += msg.Text
 				m.applyFilter()
@@ -392,6 +407,16 @@ func (m pickerModel) View() tea.View {
 		return view
 	}
 	theme := pickerTheme{theme: m.theme}
+	if m.help {
+		view := tea.NewView(renderWorkflowShell(theme, max(48, m.width), workflowShell{
+			Title:  "passage · keys",
+			Body:   helpLines(theme),
+			Footer: "press any key to return",
+		}))
+		view.AltScreen = !m.noAltScreen
+		view.ReportFocus = true
+		return view
+	}
 	spec := m.computeLayout(theme)
 	body := append([]string{}, spec.header...)
 	if spec.detailWidth > 0 && m.busy == nil && m.modal == nil {
@@ -503,9 +528,39 @@ func (m pickerModel) titleLine() string {
 	return title
 }
 
+// pickerFooterText is a single contextual hint line. The full, task-grouped
+// key reference moved behind "?", so the footer no longer dumps eleven chords.
+// helpLines is the task-grouped key reference shown behind "?".
+func helpLines(theme pickerTheme) []string {
+	row := func(k, d string) string {
+		return "  " + theme.primary(termstyle.PadRight(k, 14)) + theme.muted(d)
+	}
+	var b []string
+	b = append(b, theme.accent("NAVIGATE"))
+	b = append(b, row("type", "fuzzy filter"))
+	b = append(b, row("up / down", "move cursor"))
+	b = append(b, row("pgup / pgdn", "page up / down"))
+	b = append(b, row("home / end", "jump to first / last"))
+	b = append(b, "", theme.accent("ACTIONS"))
+	b = append(b, row("enter", "default — copy, or TOTP on an mfa row"))
+	b = append(b, row("^Y", "copy password"))
+	b = append(b, row("^R", "reveal password"))
+	b = append(b, row("^T", "TOTP code, or reveal secret on an mfa row"))
+	b = append(b, row("^P", "toggle pin"))
+	b = append(b, "", theme.accent("VIEW & MANAGE"))
+	b = append(b, row("^F", "toggle mfa-only"))
+	b = append(b, row("^O", "theme editor"))
+	b = append(b, row("^X", "clear clipboard"))
+	b = append(b, row("^U / ^E", "clear pins / recents (confirm)"))
+	b = append(b, row("^D / ^K", "doctor / list keys"))
+	b = append(b, "", theme.accent("GENERAL"))
+	b = append(b, row("?", "this help"))
+	b = append(b, row("^C / esc", "quit"))
+	return b
+}
+
 func pickerFooterText() string {
-	return "type filters | arrows move | enter default | ^C/esc quit\n" +
-		"^Y copy ^R reveal ^T totp/secret ^P pin ^F mfa ^O theme ^X clip ^U unpin ^E recent ^D doc ^K keys"
+	return "type filter   arrows move   enter default   ^T totp   ? keys"
 }
 
 func pickerShellStructuralLines(footer string) int {
