@@ -98,23 +98,43 @@ func (m revealModel) View() tea.View {
 	return view
 }
 
+// wrapSecret splits a secret into lines no wider than width, breaking only on
+// rune boundaries so a multibyte secret is never corrupted mid-rune (the old
+// byte-slice cut split CJK/emoji secrets on narrow terminals). It measures each
+// rune with termstyle.VisibleWidth so the wrap stays cell-accurate once width
+// math is cell-based, while remaining identical to rune-counting for ASCII.
 func wrapSecret(value string, width int) []string {
 	value = strings.TrimRight(value, "\n")
 	if value == "" {
 		return []string{""}
 	}
+	if width < 1 {
+		width = 1
+	}
 	if termstyle.VisibleWidth(value) <= width {
 		return []string{value}
 	}
 	var out []string
-	for len(value) > 0 {
-		if termstyle.VisibleWidth(value) <= width {
-			out = append(out, value)
-			break
+	var line strings.Builder
+	lineWidth := 0
+	for _, r := range value {
+		rw := termstyle.VisibleWidth(string(r))
+		if rw < 1 {
+			rw = 1
 		}
-		cut := min(width, len(value))
-		out = append(out, value[:cut])
-		value = value[cut:]
+		if lineWidth > 0 && lineWidth+rw > width {
+			out = append(out, line.String())
+			line.Reset()
+			lineWidth = 0
+		}
+		line.WriteRune(r)
+		lineWidth += rw
+	}
+	if line.Len() > 0 {
+		out = append(out, line.String())
+	}
+	if len(out) == 0 {
+		out = append(out, "")
 	}
 	return out
 }
