@@ -89,6 +89,7 @@ passage list --json
 passage copy work/github
 passage totp work/github
 passage doctor
+passage theme           # open the theme builder
 ```
 
 In the TUI:
@@ -101,7 +102,7 @@ In the TUI:
 - `ctrl+t`: show/copy TOTP, or reveal the stored secret on an MFA-secret row
 - `ctrl+p`: toggle pin
 - `ctrl+f`: toggle MFA-only view
-- `ctrl+o`: open theme editor
+- `ctrl+o`: open theme builder (also `passage theme`)
 - `ctrl+x`: clear clipboard
 - `ctrl+u`: unpin all (asks for confirmation)
 - `ctrl+e`: clear recents (asks for confirmation)
@@ -110,13 +111,18 @@ In the TUI:
 - mouse wheel scrolls and click selects (in the alternate screen)
 - `esc`, `ctrl+c`, or `ctrl+q`: quit
 
-## Theme Editor
+## Theme Builder
 
-Press `ctrl+o` from the picker to edit the semantic text roles used by the TUI.
-Use arrows to cycle role presets, `e` to type a raw style such as `bold cyan`,
-`d` to inherit the default, and `s` to save. Themes are written to
-`${XDG_CONFIG_HOME:-~/.config}/passage/theme.conf` unless `PASSAGE_THEME_FILE`
-or `--theme-file` points elsewhere.
+Run `passage theme`, or press `ctrl+o` from the picker, to open the theme
+builder. The top row chooses the **base palette** — `terminal` (16-color ANSI)
+or `vivid` (24-bit truecolor) — and the rows below tune the semantic text roles
+on top of it. Use arrows to switch the base or cycle a role's presets, `e` to
+type a raw style such as `bold cyan`, `d` to inherit from the base, `r` to reset,
+`t` to check contrast, and `s` to save. The preview pane re-tints live as you go.
+
+Themes are written to `${XDG_CONFIG_HOME:-~/.config}/passage/theme.conf` (a
+`theme = vivid` line records the base; per-role overrides follow) unless
+`PASSAGE_THEME_FILE` or `--theme-file` points elsewhere.
 
 ## MFA Convention
 
