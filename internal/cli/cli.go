@@ -39,6 +39,10 @@ Commands:
   clear-recents    Clear MRU timestamps
   clear-pins       Clear all pins
   clear-clipboard  Clear the clipboard
+  insert           Create or overwrite an entry (password from stdin)
+  generate         Generate a random password for a new entry
+  edit             Edit an entry in $EDITOR
+  rm               Remove an entry
   doctor           Check pass, gpg, clipboard, and .gpg-id health
   access           Report whether you can write (encrypt) per .gpg-id scope
   trust            Local-sign recipients to make a read-only scope writable
@@ -96,6 +100,32 @@ Reports, per .gpg-id scope, whether you can encrypt to all recipients
 (writable), can only decrypt (read-only), or neither (no access). With an
 ENTRY (or folder path), reports just the scope governing it. Exits 2 when any
 reported scope is not writable.
+`
+
+const insertUsage = `Usage:
+  passage insert ENTRY [--multiline] [--force] [--store-dir PATH]
+
+Reads the secret from stdin (the first line, or the whole stream with
+--multiline) and encrypts it to the entry's recipients. Refuses early if the
+target folder is read-only. Use --force to overwrite an existing entry.
+`
+
+const generateUsage = `Usage:
+  passage generate ENTRY [LENGTH] [--no-symbols] [--no-copy] [--force] [--json] [--store-dir PATH]
+
+Generates a random password for a new entry and copies it to the clipboard
+(unless --no-copy). Refuses early if the target folder is read-only.
+`
+
+const editUsage = `Usage:
+  passage edit ENTRY [--store-dir PATH]
+
+Opens the entry in $EDITOR via pass and re-encrypts it. Refuses early if the
+folder is read-only.
+`
+
+const rmUsage = `Usage:
+  passage rm ENTRY [--recursive] [--yes] [--store-dir PATH]
 `
 
 const trustUsage = `Usage:
@@ -213,6 +243,14 @@ func (r runner) run(args []string) int {
 		return r.runClear(args[1:], "pins")
 	case "clear-clipboard":
 		return r.runClearClipboard(args[1:])
+	case "insert":
+		return r.runInsert(args[1:])
+	case "generate":
+		return r.runGenerate(args[1:])
+	case "edit":
+		return r.runEdit(args[1:])
+	case "rm", "remove":
+		return r.runRm(args[1:])
 	case "doctor":
 		return r.runDoctor(args[1:])
 	case "access":
@@ -248,6 +286,14 @@ func (r runner) runHelp(args []string) int {
 		fmt.Fprint(r.stdout, revealUsage)
 	case "totp", "mfa":
 		fmt.Fprint(r.stdout, totpUsage)
+	case "insert":
+		fmt.Fprint(r.stdout, insertUsage)
+	case "generate":
+		fmt.Fprint(r.stdout, generateUsage)
+	case "edit":
+		fmt.Fprint(r.stdout, editUsage)
+	case "rm", "remove":
+		fmt.Fprint(r.stdout, rmUsage)
 	case "doctor":
 		fmt.Fprint(r.stdout, doctorUsage)
 	case "access":
@@ -1001,6 +1047,251 @@ func (r runner) runAccess(args []string) int {
 	if notWritable {
 		return 2
 	}
+	return 0
+}
+
+// preflightWritable refuses a store mutation early when the target folder is not
+// writable, with a message pointing at the fix, rather than letting pass
+// hard-fail mid-encrypt.
+func (r runner) preflightWritable(ctx context.Context, storeDir, entry string) error {
+	scope, err := gpgdiag.New(storeDir).Access(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if scope.Verdict == gpgdiag.VerdictWritable {
+		return nil
+	}
+	return errors.New(readOnlyMessage(scope))
+}
+
+func readOnlyMessage(scope gpgdiag.ScopeReport) string {
+	where := scope.Label
+	if where == "" || where == "default" {
+		where = "this folder"
+	}
+	var blockers []string
+	blockers = append(blockers, scope.Invalid...)
+	blockers = append(blockers, scope.Unusable...)
+	blockers = append(blockers, scope.Missing...)
+	detail := ""
+	if len(blockers) > 0 {
+		detail = " (can't encrypt to " + strings.Join(blockers, ", ") + ")"
+	}
+	switch scope.Verdict {
+	case gpgdiag.VerdictUninitialized:
+		return where + " has no .gpg-id; run `pass init <gpg-id>` first"
+	case gpgdiag.VerdictNoAccess:
+		return where + " is not accessible" + detail + "; you own none of its recipients"
+	default: // read_only
+		hint := ""
+		switch scope.Fixable {
+		case "trust":
+			hint = "; run `passage trust " + scope.Scope + "` to fix"
+		case "import":
+			hint = "; a recipient key is missing — run `passage trust --import-dir DIR`"
+		case "unfixable":
+			hint = "; recipients are expired/revoked and must be renewed"
+		}
+		return where + " is read-only" + detail + hint
+	}
+}
+
+func (r runner) runInsert(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	multiline := consumeBoolFlag(&rest, "--multiline")
+	force := consumeBoolFlag(&rest, "--force")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, insertUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(r.stderr, insertUsage)
+		return 1
+	}
+	entry := rest[0]
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if _, exists := findEntry(rt.entries, entry); exists && !force {
+		fmt.Fprintf(r.stderr, "passage: entry %q exists; pass --force to overwrite\n", entry)
+		return 1
+	}
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	var content []byte
+	if multiline {
+		content, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: read stdin: %v\n", err)
+			return 1
+		}
+	} else {
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		content = []byte(strings.TrimRight(line, "\r\n"))
+	}
+	if err := rt.store.Insert(ctx, entry, content); err != nil {
+		zero(content)
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	zero(content)
+	if flags.json {
+		return writeJSON(r.stdout, mutateResponse{SchemaVersion: 1, Entry: entry, Action: "insert"})
+	}
+	fmt.Fprintf(r.stderr, "Inserted %s.\n", entry)
+	return 0
+}
+
+func (r runner) runGenerate(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	noSymbols := consumeBoolFlag(&rest, "--no-symbols")
+	force := consumeBoolFlag(&rest, "--force")
+	noCopy := consumeBoolFlag(&rest, "--no-copy")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, generateUsage)
+		return 0
+	}
+	if len(rest) < 1 || len(rest) > 2 {
+		fmt.Fprint(r.stderr, generateUsage)
+		return 1
+	}
+	entry := rest[0]
+	length := 0
+	if len(rest) == 2 {
+		length, err = strconv.Atoi(rest[1])
+		if err != nil || length <= 0 {
+			fmt.Fprintf(r.stderr, "passage: invalid LENGTH %q\n", rest[1])
+			return 1
+		}
+	}
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if _, exists := findEntry(rt.entries, entry); exists && !force {
+		fmt.Fprintf(r.stderr, "passage: entry %q exists; pass --force to overwrite\n", entry)
+		return 1
+	}
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	password, err := rt.store.Generate(ctx, entry, passstore.GenerateOptions{NoSymbols: noSymbols, Length: length})
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	msg := "Generated " + entry
+	if !noCopy {
+		if res, copyErr := clipboard.Copy(ctx, password); copyErr == nil {
+			msg += ", copied to clipboard (" + res.Tool + ")"
+		}
+	}
+	zero(password)
+	if flags.json {
+		return writeJSON(r.stdout, mutateResponse{SchemaVersion: 1, Entry: entry, Action: "generate"})
+	}
+	fmt.Fprintln(r.stderr, msg+".")
+	return 0
+}
+
+func (r runner) runEdit(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, editUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(r.stderr, editUsage)
+		return 1
+	}
+	entry := rest[0]
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	// Background context: $EDITOR is human-paced and must not hit a timeout.
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if err := rt.store.Edit(ctx, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(r.stderr, "Edited %s.\n", entry)
+	return 0
+}
+
+func (r runner) runRm(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	recursive := consumeBoolFlag(&rest, "--recursive") || consumeBoolFlag(&rest, "-r")
+	yes := consumeBoolFlag(&rest, "--yes")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, rmUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(r.stderr, rmUsage)
+		return 1
+	}
+	entry := rest[0]
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if _, exists := findEntry(rt.entries, entry); !exists && !recursive {
+		fmt.Fprintf(r.stderr, "passage: entry %q not found\n", entry)
+		return 2
+	}
+	if !yes {
+		prompt := fmt.Sprintf("Remove %s? [y/N] ", entry)
+		if recursive {
+			prompt = fmt.Sprintf("Remove %s and everything under it? [y/N] ", entry)
+		}
+		if !confirm(os.Stdin, r.stderr, prompt) {
+			fmt.Fprintln(r.stderr, "Cancelled.")
+			return 0
+		}
+	}
+	ctx := context.Background()
+	if err := rt.store.Remove(ctx, entry, passstore.RemoveOptions{Recursive: recursive}); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if flags.json {
+		return writeJSON(r.stdout, mutateResponse{SchemaVersion: 1, Entry: entry, Action: "rm"})
+	}
+	fmt.Fprintf(r.stderr, "Removed %s.\n", entry)
 	return 0
 }
 
@@ -1866,4 +2157,10 @@ type totpResponse struct {
 type keysResponse struct {
 	SchemaVersion int                `json:"schema_version"`
 	Keys          []gpgdiag.LocalKey `json:"keys"`
+}
+
+type mutateResponse struct {
+	SchemaVersion int    `json:"schema_version"`
+	Entry         string `json:"entry"`
+	Action        string `json:"action"`
 }

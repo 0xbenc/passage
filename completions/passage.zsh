@@ -14,6 +14,10 @@ _passage() {
     'clear-recents:Clear MRU timestamps'
     'clear-pins:Clear all pins'
     'clear-clipboard:Clear the clipboard'
+    'insert:Create or overwrite an entry'
+    'generate:Generate a random password'
+    'edit:Edit an entry in $EDITOR'
+    'rm:Remove an entry'
     'doctor:Run health checks'
     'access:Report write access per .gpg-id scope'
     'trust:Local-sign recipients to make a scope writable'
@@ -56,6 +60,15 @@ _passage() {
           ;;
         trust)
           _arguments '--full[Also set ownertrust full]' '--import-dir[Import+trust a key folder]:dir:_files -/' '--yes[Skip confirmation]' $common
+          ;;
+        insert)
+          _arguments '--multiline[Read whole stdin]' '--force[Overwrite existing]' $common
+          ;;
+        generate)
+          _arguments '--no-symbols[Alphanumeric only]' '--no-copy[Do not copy]' '--force[Overwrite existing]' $common
+          ;;
+        rm|remove)
+          _arguments '--recursive[Remove a subtree]' '--yes[Skip confirmation]' $common
           ;;
         help)
           _describe 'topic' commands

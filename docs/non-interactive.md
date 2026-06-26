@@ -91,6 +91,31 @@ passage clear-pins
 passage clear-clipboard
 ```
 
+### insert / generate / edit / rm
+
+```sh
+passage insert ENTRY [--multiline] [--force] [--store-dir PATH]
+passage generate ENTRY [LENGTH] [--no-symbols] [--no-copy] [--force] [--json]
+passage edit ENTRY [--store-dir PATH]
+passage rm ENTRY [--recursive] [--yes] [--json] [--store-dir PATH]
+```
+
+The store-writing verbs. They delegate to `pass` (which remains the source of
+truth) and pre-flight the writable verdict, refusing early with a pointer to
+`passage trust` when the target folder is read-only, rather than letting gpg
+hard-fail mid-encrypt.
+
+- `insert` reads the secret from stdin — the first line, or the whole stream
+  with `--multiline`. `--force` overwrites an existing entry.
+- `generate` creates a random password (optional `LENGTH`, `--no-symbols`) and
+  copies it to the clipboard unless `--no-copy`; the secret is never printed.
+- `edit` opens the entry in `$EDITOR` and re-encrypts on save (needs a terminal).
+- `rm` deletes an entry, or a subtree with `--recursive`; it confirms unless
+  `--yes`. (Removal does not encrypt, so it is not gated on writability.)
+
+`insert`, `generate`, and `rm` accept `--json`, emitting `{schema_version,
+entry, action}`.
+
 ### doctor
 
 ```sh

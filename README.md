@@ -18,6 +18,8 @@ the same `entry/mfa` convention used by the old script.
   recents, and MFA badges. A responsive detail pane appears on wide terminals,
   and `?` opens a grouped key reference.
 - Password copy and reveal actions. Passwords are the first line of `pass show`.
+- Create, generate, edit, and remove entries (`insert`/`generate`/`edit`/`rm`),
+  delegating to `pass` and refusing early when a folder is read-only.
 - Live TOTP countdown and a clipboard-armed status pill that auto-clears while
   passage is open; secrets are blanked when the terminal loses focus.
 - Native SHA1 TOTP generation; `oathtool` is no longer required.

@@ -56,6 +56,30 @@ Set or clear an entry pin.
 .B clear-recents / clear-pins / clear-clipboard
 Clear local metadata or clipboard contents.
 .TP
+.B insert
+Create or overwrite an entry, reading the secret from stdin (the first line, or
+the whole stream with
+.BR --multiline ).
+Refuses early if the target folder is read-only.
+.TP
+.B generate
+Generate a random password for a new entry and copy it to the clipboard
+(unless
+.BR --no-copy ).
+Accepts an optional length and
+.BR --no-symbols .
+Refuses early if the target folder is read-only.
+.TP
+.B edit
+Open an entry in $EDITOR via pass and re-encrypt it. Refuses early if the
+folder is read-only.
+.TP
+.B rm
+Remove an entry, or a subtree with
+.BR --recursive .
+Prompts for confirmation unless
+.BR --yes .
+.TP
 .B doctor
 Check pass, gpg, clipboard tools, and .gpg-id recipient health.
 .TP

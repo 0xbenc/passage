@@ -5,7 +5,7 @@ _passage()
     local cur prev words cword
     _init_completion || return
 
-    local commands="list show copy reveal totp mfa pin unpin clear-recents clear-pins clear-clipboard doctor access trust keys theme version help"
+    local commands="list show copy reveal totp mfa pin unpin clear-recents clear-pins clear-clipboard insert generate edit rm doctor access trust keys theme version help"
     local common_flags="--store-dir --state-dir --json --no-color --theme-file --no-alt-screen --help"
 
     if [[ $cword -eq 1 ]]; then
@@ -56,6 +56,22 @@ _passage()
             ;;
         trust)
             COMPREPLY=( $(compgen -W "--full --import-dir --yes --json --store-dir --help" -- "$cur") )
+            return
+            ;;
+        insert)
+            COMPREPLY=( $(compgen -W "--multiline --force --json --store-dir --state-dir --help" -- "$cur") )
+            return
+            ;;
+        generate)
+            COMPREPLY=( $(compgen -W "--no-symbols --no-copy --force --json --store-dir --state-dir --help" -- "$cur") )
+            return
+            ;;
+        edit)
+            COMPREPLY=( $(compgen -W "--store-dir --state-dir --help" -- "$cur") )
+            return
+            ;;
+        rm|remove)
+            COMPREPLY=( $(compgen -W "--recursive --yes --json --store-dir --state-dir --help" -- "$cur") )
             return
             ;;
         theme)

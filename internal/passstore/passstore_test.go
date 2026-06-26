@@ -84,6 +84,55 @@ func TestShowMirrorsPassStderr(t *testing.T) {
 	}
 }
 
+func TestInsertPipesContentWithTrailingNewline(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	out := filepath.Join(bin, "inserted.txt")
+	pass := makeScript(t, bin, "pass", `if [ "$1" = insert ]; then cat > "$INSERT_OUT"; exit 0; fi; exit 9`)
+	t.Setenv("INSERT_OUT", out)
+	store := New(root, pass)
+	if err := store.Insert(t.Context(), "work/x", []byte("pw")); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "pw\n" {
+		t.Fatalf("inserted = %q, want %q", data, "pw\n")
+	}
+}
+
+func TestGenerateParsesAnsiPassword(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	pass := makeScript(t, bin, "pass", `printf 'The generated password for %s is:\n\033[1;32mGenSecret123\033[0m\n' "$4"`)
+	store := New(root, pass)
+	pw, err := store.Generate(t.Context(), "work/x", GenerateOptions{Length: 12})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if string(pw) != "GenSecret123" {
+		t.Fatalf("generated = %q, want GenSecret123", pw)
+	}
+}
+
+func TestRemovePassesRecursiveFlag(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	out := filepath.Join(bin, "rm.txt")
+	pass := makeScript(t, bin, "pass", `if [ "$1" = rm ]; then echo "$@" > "$RM_OUT"; exit 0; fi; exit 9`)
+	t.Setenv("RM_OUT", out)
+	store := New(root, pass)
+	if err := store.Remove(t.Context(), "work/x", RemoveOptions{Recursive: true}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	data, _ := os.ReadFile(out)
+	if !strings.Contains(string(data), "--recursive") || !strings.Contains(string(data), "work/x") {
+		t.Fatalf("rm args = %q", data)
+	}
+}
+
 func touch(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

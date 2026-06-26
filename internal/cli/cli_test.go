@@ -339,6 +339,62 @@ func TestRunTrustPlanJSON(t *testing.T) {
 	}
 }
 
+func TestRunGenerateWritable(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, root, "owner")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	pass := makeScript2(t, bin, "pass", `if [ "$1" = generate ]; then printf 'pw-line\nGenSecret\n'; exit 0; fi; exit 9`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", pass)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"generate", "work/new", "16", "--no-copy", "--store-dir", root, "--state-dir", t.TempDir()}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run generate = %d; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Generated work/new") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunInsertReadOnlyRefusedBeforeExec(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, filepath.Join(root, "secure"), "owner", "carol")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	sentinel := filepath.Join(bin, "pass-was-called")
+	pass := makeScript2(t, bin, "pass", `echo called > "$PASS_SENTINEL"; exit 0`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", pass)
+	t.Setenv("PASS_SENTINEL", sentinel)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner carol")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner") // carol not encryptable -> read-only
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"insert", "secure/x", "--store-dir", root, "--state-dir", t.TempDir()}, &stdout, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("Run insert = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "read-only") {
+		t.Fatalf("stderr = %q, want read-only refusal", stderr.String())
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("pass was invoked despite read-only pre-flight; it must refuse before exec")
+	}
+}
+
+// makeScript2 mirrors makeScript but returns the script path (for PASSAGE_PASS_BINARY).
+func makeScript2(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	makeScript(t, dir, name, body)
+	return filepath.Join(dir, name)
+}
+
 func writeGPGIDFile(t *testing.T, dir string, ids ...string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
