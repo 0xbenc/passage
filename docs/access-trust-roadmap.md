@@ -2,6 +2,16 @@
 
 *A decision-ready roadmap for the maintainer. The load-bearing GPG claims below were verified by running real `gpg` (GnuPG 2.2.27) in a throwaway `GNUPGHOME`, then independently re-run by a second adversarial pass. The Bubble Tea mechanics were checked against the real source under `internal/` and `charm.land/bubbletea/v2@v2.0.7`. Where the source or the experiment contradicts a popular assumption, it wins.*
 
+> **Status: implemented (all five phases).** One design change was made during
+> implementation: the TUI write/trust actions are bound to the **shifted**
+> letters `N`/`G`/`E`/`D`/`T`, not lowercase-when-empty. Fuzzy matching is
+> case-insensitive (`internal/fuzzy/fuzzy.go`), so uppercase is never needed to
+> filter; this keeps lowercase always typing into the filter (the project's core
+> invariant, pinned by `TestPickerFuzzyFilterCrossesDelimiter`) while letting you
+> narrow with a lowercase filter and then act with a shifted key — avoiding the
+> "can't filter an entry starting with n/g/e/d/t" regression the lowercase scheme
+> would have caused.
+
 ---
 
 ## 1. What we are building
@@ -121,7 +131,7 @@ gpgobble-style trust, CLI only (no TUI yet). Plan/Apply split so dry-run == don'
 
 ### Phase 4 — full TUI
 - `passstore.Entry` gains `Writable` (`writable|read_only|no_access`), `GPGIDPath`, `Invalid`/`Missing` slices, precomputed **per scope** at load (cached so `View` never shells `gpg`).
-- `ui`: reusable masked `textField` sub-model; a multi-step `composer` (hosted like `themeEditor`); `Action` enum `ActionNew/ActionGenerate/ActionEdit/ActionRemove/ActionTrust`; `RO`/`NO` badge in `entryMarkers`; detail-pane verdict block; `?` help WRITE+TRUST groups; keys `n/g/e/d/t` bound **only when the filter query is empty** (same guard `?` uses, `picker.go:394`).
+- `ui`: reusable masked `textField` sub-model; a multi-step `composer` (hosted like `themeEditor`); `Action` enum `ActionNew/ActionGenerate/ActionEdit/ActionRemove/ActionTrust`; `RO`/`NO` badge in `entryMarkers`; detail-pane verdict block; `?` help WRITE+TRUST groups; **shifted** keys `N/G/E/D/T` act on the selection while lowercase always filters.
 - Gating: a write key on a read-only scope opens a confirm offering to jump into Trust; no-access shows an import hint with no trust offer.
 - **`--full` is exposed in the TUI trust preview** as a toggle (per maintainer decision), not just the CLI flag.
 
@@ -129,7 +139,7 @@ gpgobble-style trust, CLI only (no TUI yet). Plan/Apply split so dry-run == don'
 
 ## 5. TUI spec
 
-Key scheme: single letters when the filter is empty — `n` new · `g` generate · `e` edit · `d` delete · `t` trust. (Ctrl-chords are nearly exhausted: `ctrl+e` = clear-recents, `ctrl+t` = totp.) Verdict is precomputed per scope and cached; `View` never shells out (honors the decrypt-free detail-pane invariant, `picker.go:888-890`).
+Key scheme (as implemented): **shifted** letters act regardless of filter state — `N` new · `G` generate · `E` edit · `D` delete · `T` trust — while lowercase always types into the case-insensitive fuzzy filter. (Ctrl-chords are nearly exhausted: `ctrl+e` = clear-recents, `ctrl+t` = totp; and several free ones — `ctrl+s`/`ctrl+a`/`ctrl+b` — are unsafe under flow-control or tmux/screen prefixes.) The verdict is loaded asynchronously after launch (cold start stays instant) and cached; `View` never shells out (honors the decrypt-free detail-pane invariant, `picker.go:888-890`).
 
 **Read-only badge + detail verdict**
 ```
@@ -232,7 +242,7 @@ Reminder (see CONTRIBUTING.md:16-22): each new subcommand (`access`, `trust`, `i
 | **TTY / process-group** for gap children | explicit no-`Setpgid` path + a test asserting the interactive child inherits the parent pgroup; confirm no passage SIGINT handler intercepts |
 | **Commit-signing timeout** — `pass.signcommits` prompts pinentry on write | `writeActionTimeout` (~60s) for in-program writes; gap-path (edit/trust) has no cap |
 | **JSON shape break** — renaming `StoreReport` buckets while keeping `schema_version:1` | pre-1.0 internal; rename in one commit + update docs; add deprecated aliases or bump schema if an external consumer surfaces |
-| **Key-binding leak** — single letters into the filter | bind only when query is empty (same guard `?` uses); document that filter-then-act needs arrow selection |
+| **Key-binding leak** — letters into the filter | RESOLVED by binding the actions to *shifted* keys (N/G/E/D/T); lowercase always filters (matching is case-insensitive, so uppercase is never needed to filter) |
 | **Relaunch flicker** (Pattern A) | restore `SelectPath`/`Filter`/`MFAOnly`; Pattern B (`tea.ExecProcess`) is the fallback |
 | **Scope edge** — root has no `.gpg-id` but subdirs do | `ScopeDirs` enumerates real scopes at any depth; entries directly under root resolve to UNINITIALIZED |
 | **`--import-dir` footgun** — imports arbitrary key files | strictly opt-in, always previewed before Apply |

@@ -377,6 +377,12 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 	message := ""
 	messageErr := false
 	for {
+		// Snapshot the inputs the async LoadAccess reads, so its goroutine never
+		// races RunAction's in-place mutation of rt. refreshInteractive replaces
+		// rt.entries with a fresh slice rather than mutating this one, so the
+		// snapshot stays valid for this picker session.
+		accessStore := rt.storeDir
+		accessEntries := rt.entries
 		result, err := ui.Pick(ctx, rt.entries, ui.PickOptions{
 			Output:      r.stderr,
 			NoColor:     flags.noColor,
@@ -406,7 +412,7 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 				return r.runInteractiveAction(actionCtx, &rt, flags, req)
 			},
 			LoadAccess: func(loadCtx context.Context) map[string]string {
-				return computeAccess(loadCtx, rt.storeDir, rt.entries)
+				return computeAccess(loadCtx, accessStore, accessEntries)
 			},
 		})
 		if err != nil {
