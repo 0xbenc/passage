@@ -12,12 +12,17 @@ import (
 )
 
 // DirEntry is one row in the directory browser: a folder to open, the parent,
-// or the "use this folder" choice. Path is the absolute path the choice
-// resolves to; Kind drives the caller's navigation.
+// the "use this folder" choice, or a file shown for reference. Path is the
+// absolute path the choice resolves to; Kind drives the caller's navigation. A
+// "file" row is informational only — it is rendered but the cursor skips it.
 type DirEntry struct {
 	Title string
 	Path  string
-	Kind  string // "use" | "up" | "dir"
+	Kind  string // "use" | "up" | "dir" | "file"
+}
+
+func dirEntrySelectable(kind string) bool {
+	return kind != "file"
 }
 
 type DirBrowseOptions struct {
@@ -110,7 +115,8 @@ func (m dirBrowseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.canceled = true
 			return m, tea.Quit
 		case "enter":
-			if len(m.filtered) > 0 {
+			// Files are reference-only; Enter selects only a folder choice.
+			if m.isSelectable(m.cursor) {
 				m.selected = m.cursor
 				return m, tea.Quit
 			}
@@ -123,10 +129,14 @@ func (m dirBrowseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown":
 			m.move(m.pageSize())
 		case "home":
-			m.cursor = 0
+			if s := m.snap(0, 1); s >= 0 {
+				m.cursor = s
+			}
 			m.ensureVisible()
 		case "end":
-			m.cursor = max(0, len(m.filtered)-1)
+			if s := m.snap(len(m.filtered)-1, -1); s >= 0 {
+				m.cursor = s
+			}
 			m.ensureVisible()
 		case "backspace":
 			if m.query != "" {
@@ -153,7 +163,7 @@ func (m dirBrowseModel) View() tea.View {
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
 		Title:  strings.ToUpper(m.title),
 		Body:   body,
-		Footer: "enter open/use   type filter   arrows move   esc cancel",
+		Footer: "enter open/use folder   files shown for reference   type filter   esc cancel",
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view
@@ -223,6 +233,8 @@ func dirBrowseRow(entry DirEntry, selected bool, width int, theme pickerTheme) s
 		return theme.selected(termstyle.PadRight(line, width))
 	case entry.Kind == "use":
 		return theme.accent(line)
+	case entry.Kind == "file":
+		return theme.subtle(line) // reference-only, dimmed
 	case entry.Kind == "up":
 		return theme.muted(line)
 	default:
@@ -235,6 +247,38 @@ func (m dirBrowseModel) pageSize() int {
 	return max(1, m.height-8)
 }
 
+// isSelectable reports whether the cursor may rest on (and Enter may choose) the
+// row at a filtered index — true for folder choices, false for file rows.
+func (m dirBrowseModel) isSelectable(filteredIdx int) bool {
+	if filteredIdx < 0 || filteredIdx >= len(m.filtered) {
+		return false
+	}
+	return dirEntrySelectable(m.entries[m.filtered[filteredIdx]].Kind)
+}
+
+// snap returns a selectable filtered index for the cursor: it searches from idx
+// in the travel direction first, then falls back the other way; -1 if no row is
+// selectable. Searching the travel direction fully keeps the cursor moving past
+// a run of file rows toward the next folder instead of snapping back.
+func (m dirBrowseModel) snap(idx, dir int) int {
+	n := len(m.filtered)
+	if n == 0 {
+		return -1
+	}
+	idx = clamp(idx, 0, n-1)
+	for i := idx; i >= 0 && i < n; i += dir {
+		if m.isSelectable(i) {
+			return i
+		}
+	}
+	for i := idx; i >= 0 && i < n; i -= dir {
+		if m.isSelectable(i) {
+			return i
+		}
+	}
+	return -1
+}
+
 func (m *dirBrowseModel) applyFilter() {
 	q := strings.ToLower(strings.TrimSpace(m.query))
 	m.filtered = m.filtered[:0]
@@ -243,20 +287,27 @@ func (m *dirBrowseModel) applyFilter() {
 			m.filtered = append(m.filtered, i)
 		}
 	}
-	if m.cursor >= len(m.filtered) {
-		m.cursor = max(0, len(m.filtered)-1)
-	}
-	if m.cursor < 0 {
+	if s := m.snap(0, 1); s >= 0 {
+		m.cursor = s
+	} else {
 		m.cursor = 0
 	}
 	m.ensureVisible()
 }
 
 func (m *dirBrowseModel) move(delta int) {
-	if len(m.filtered) == 0 {
+	if len(m.filtered) == 0 || delta == 0 {
 		return
 	}
-	m.cursor = clamp(m.cursor+delta, 0, len(m.filtered)-1)
+	dir := 1
+	if delta < 0 {
+		dir = -1
+	}
+	// Land on the nearest selectable row in the direction of travel, so the
+	// cursor steps over reference-only file rows.
+	if s := m.snap(m.cursor+delta, dir); s >= 0 {
+		m.cursor = s
+	}
 	m.ensureVisible()
 }
 

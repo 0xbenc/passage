@@ -48,6 +48,37 @@ func TestDirBrowseUseFolderIsFirst(t *testing.T) {
 	}
 }
 
+func TestDirBrowseCursorSkipsFiles(t *testing.T) {
+	m := newDirBrowse([]DirEntry{
+		{Title: "Use this folder", Path: "/k", Kind: "use"},
+		{Title: "sub/", Path: "/k/sub", Kind: "dir"},
+		{Title: "a.asc", Path: "/k/a.asc", Kind: "file"},
+		{Title: "b.gpg", Path: "/k/b.gpg", Kind: "file"},
+	})
+	// Cursor starts on the first selectable (use, index 0).
+	if m.cursor != 0 {
+		t.Fatalf("initial cursor = %d, want 0", m.cursor)
+	}
+	// Down once lands on the dir (index 1), skipping nothing.
+	down, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "\x1b[B"}))
+	m = down.(dirBrowseModel)
+	if m.cursor != 1 || m.entries[m.filtered[m.cursor]].Kind != "dir" {
+		t.Fatalf("after down cursor = %d (kind %s), want dir at 1", m.cursor, m.entries[m.filtered[m.cursor]].Kind)
+	}
+	// Down again must NOT land on a file row — it stays on the dir (no selectable below).
+	down2, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "\x1b[B"}))
+	m = down2.(dirBrowseModel)
+	if m.entries[m.filtered[m.cursor]].Kind == "file" {
+		t.Fatalf("cursor landed on a file row at %d", m.cursor)
+	}
+	// Enter on a file row would be a no-op: force cursor onto the file and try.
+	m.cursor = 2 // a.asc
+	en, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if got := en.(dirBrowseModel); got.selected >= 0 {
+		t.Fatalf("Enter selected a file row (selected=%d)", got.selected)
+	}
+}
+
 func TestDirBrowseCancel(t *testing.T) {
 	m := newDirBrowse([]DirEntry{{Title: "Use this folder", Kind: "use"}})
 	u, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))

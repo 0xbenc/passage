@@ -584,21 +584,36 @@ func dirBrowseEntries(dir string) []ui.DirEntry {
 	if err != nil {
 		return entries
 	}
-	var dirs []ui.DirEntry
+	var dirs, files []ui.DirEntry
 	for _, child := range children {
-		if !child.IsDir() || strings.HasPrefix(child.Name(), ".") {
+		if strings.HasPrefix(child.Name(), ".") {
 			continue
 		}
-		dirs = append(dirs, ui.DirEntry{
-			Title: child.Name() + "/",
-			Path:  filepath.Join(dir, child.Name()),
-			Kind:  "dir",
+		if child.IsDir() {
+			dirs = append(dirs, ui.DirEntry{
+				Title: child.Name() + "/",
+				Path:  filepath.Join(dir, child.Name()),
+				Kind:  "dir",
+			})
+		} else {
+			// Files are shown for reassurance (which key files are here) but are
+			// not selectable — you import a folder, not an individual file.
+			files = append(files, ui.DirEntry{
+				Title: child.Name(),
+				Path:  filepath.Join(dir, child.Name()),
+				Kind:  "file",
+			})
+		}
+	}
+	byTitle := func(s []ui.DirEntry) {
+		sort.Slice(s, func(i, j int) bool {
+			return strings.ToLower(s[i].Title) < strings.ToLower(s[j].Title)
 		})
 	}
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.ToLower(dirs[i].Title) < strings.ToLower(dirs[j].Title)
-	})
-	return append(entries, dirs...)
+	byTitle(dirs)
+	byTitle(files)
+	entries = append(entries, dirs...)
+	return append(entries, files...)
 }
 
 // firstRunGuidance turns the most common first-run failure — no password store

@@ -441,25 +441,35 @@ func TestDirBrowseEntriesListsSubdirs(t *testing.T) {
 	if entries[0].Kind != "use" || entries[1].Kind != "up" {
 		t.Fatalf("first rows = %q,%q, want use,up", entries[0].Kind, entries[1].Kind)
 	}
-	titles := map[string]bool{}
+	kindByTitle := map[string]string{}
 	for _, e := range entries {
-		titles[e.Title] = true
+		kindByTitle[e.Title] = e.Kind
 	}
-	if !titles["personal/"] || !titles["work/"] {
-		t.Fatalf("subdirs missing: %#v", titles)
+	if kindByTitle["personal/"] != "dir" || kindByTitle["work/"] != "dir" {
+		t.Fatalf("subdirs missing: %#v", kindByTitle)
 	}
-	if titles[".hidden/"] || titles["key.asc"] {
-		t.Fatalf("listed a hidden dir or a file: %#v", titles)
+	// The key file is shown for reference, as a non-selectable "file" row.
+	if kindByTitle["key.asc"] != "file" {
+		t.Fatalf("key file not listed as a file row: %#v", kindByTitle)
 	}
-	// directories are sorted (personal before work).
-	var dirOrder []string
+	if _, ok := kindByTitle[".hidden/"]; ok {
+		t.Fatalf("listed a hidden dir: %#v", kindByTitle)
+	}
+	// directories come before files, each sorted (personal before work).
+	var order []string
 	for _, e := range entries {
-		if e.Kind == "dir" {
-			dirOrder = append(dirOrder, e.Title)
+		if e.Kind == "dir" || e.Kind == "file" {
+			order = append(order, e.Kind+":"+e.Title)
 		}
 	}
-	if len(dirOrder) != 2 || dirOrder[0] != "personal/" || dirOrder[1] != "work/" {
-		t.Fatalf("dir order = %#v, want [personal/ work/]", dirOrder)
+	want := []string{"dir:personal/", "dir:work/", "file:key.asc"}
+	if len(order) != len(want) {
+		t.Fatalf("order = %#v, want %#v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order[%d] = %q, want %q", i, order[i], want[i])
+		}
 	}
 }
 
