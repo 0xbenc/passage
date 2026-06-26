@@ -37,8 +37,8 @@ Everything here rests on one question: *when will `pass insert/edit/generate` (i
 |---|---|---|
 | public key imported, nothing else | `-` (unknown) | **FAILS** — exit 2, `Unusable public key` |
 | **after `gpg --quick-lsign-key` only** | `f` (full) | **SUCCEEDS** ✅ — and writes **no** ownertrust record |
-| ownertrust = 4 (full), no lsign | `-` | **FAILS** — exit 2 |
-| ownertrust = 5 (ultimate), no lsign | `-` | **FAILS** — exit 2 |
+| ownertrust = 4 (marginal), no lsign | `-` | **FAILS** — exit 2 |
+| ownertrust = 5 (full), no lsign | `-` | **FAILS** — exit 2 |
 | `--trust-model always` over an invalid key | `-` | succeeds (but masks the real gate — never use for the verdict) |
 
 **Consequences for `gpgdiag.recipientStatus` (gpgdiag.go:225-243):** the ownertrust rule produces *false read-only* (an lsigned, perfectly encryptable key is reported "untrusted") **and** *false writable* (an ownertrust-4/5 but uncertified key is reported "trusted" though encryption fails). The user's choice of **lsign-only** is therefore not just acceptable — it is exactly sufficient: a local signature confers validity `f`, which is the whole requirement.
@@ -117,7 +117,7 @@ Pure read path; also fixes the latent ownertrust bug.
 gpgobble-style trust, CLI only (no TUI yet). Plan/Apply split so dry-run == don't-call-Apply.
 - `PlanRecipients(scope, strength)` and `PlanImportDir(dir, strength)`; `Apply(plan)`.
 - lsign via `runGPGInteractive` (`GPG_TTY` env, `os.Std*` fds, **no** `ConfigureCommandCancellation`, no `--batch` so pinentry/`y/N` work); `--import-dir` does `gpg --import` first, peeking primary fps via `--import-options import-show`.
-- `--full` adds one batched `--import-ownertrust` of `<fp>:4:` lines, **never-downgrade** (skip levels 4/5).
+- `--full` adds one batched `--import-ownertrust` of `<fp>:5:` lines, **never-downgrade** (skip levels 5/6).
 - `passage trust [--full] [--import-dir DIR] [SCOPE] [--json]`; `--json` emits the Plan only (no interactive Apply under `--json`).
 
 ### Phase 2 — store write verbs (`passstore` + CLI)

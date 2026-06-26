@@ -3,12 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/passage/internal/ui"
 )
 
 // TestThemeCommandHelp verifies the standalone `passage theme` command is
@@ -393,6 +395,36 @@ func makeScript2(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	makeScript(t, dir, name, body)
 	return filepath.Join(dir, name)
+}
+
+// TestInteractiveNewRefusesOverwrite guards against the in-TUI new/generate
+// composer silently clobbering an existing entry (the CLI verbs guard via
+// --force, but the composer has no such flag, so the handler must refuse).
+func TestInteractiveNewRefusesOverwrite(t *testing.T) {
+	store := fakeStore(t) // contains work/github
+	bin := t.TempDir()
+	sentinel := filepath.Join(bin, "pass-called")
+	pass := makeScript2(t, bin, "pass", `echo called > "$PASS_SENTINEL"; exit 0`)
+	t.Setenv("PASSAGE_PASS_BINARY", pass)
+	t.Setenv("PASS_SENTINEL", sentinel)
+
+	r := runner{stdout: io.Discard, stderr: io.Discard, env: os.Environ(), build: BuildInfo{}.normalized()}
+	flags := commonFlags{storeDir: store, stateDir: t.TempDir()}
+	rt, err := r.load(flags)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	out := r.runInteractiveActionOnce(t.Context(), &rt, flags, ui.ActionRequest{
+		Action:  ui.ActionNew,
+		NewPath: "work/github", // already exists
+		Content: []byte("hijack"),
+	})
+	if out.Err == nil || !strings.Contains(out.Err.Error(), "already exists") {
+		t.Fatalf("ActionNew over existing entry: err = %v, want 'already exists'", out.Err)
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Fatal("pass was invoked — the existing entry would have been overwritten")
+	}
 }
 
 func writeGPGIDFile(t *testing.T, dir string, ids ...string) {

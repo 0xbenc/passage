@@ -176,9 +176,13 @@ func TestRealGPGApplyLsignAndNeverDowngrade(t *testing.T) {
 		t.Fatalf("lsign-only must not write ownertrust, got:\n%s", trust)
 	}
 
-	// Pre-set bob ownertrust to ultimate(5); --full Apply must NOT downgrade it.
+	// --full must set ownertrust to full (5) on a fresh key, and must never
+	// downgrade an existing ultimate (6). gpg ownertrust values: 4=marginal,
+	// 5=full, 6=ultimate. vip = own + bob(pre-set ultimate) + charlie(fresh).
+	charlieFpr := importPub("Charlie <charlie@corp>")
+	writeGPGID(t, filepath.Join(root, "vip"), ownFpr, bobFpr, charlieFpr)
 	cmd := exec.Command(gpgBin, "--homedir", home, "--batch", "--yes", "--import-ownertrust")
-	cmd.Stdin = strings.NewReader(bobFpr + ":5:\n")
+	cmd.Stdin = strings.NewReader(bobFpr + ":6:\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("preset ownertrust: %v: %s", err, out)
 	}
@@ -190,10 +194,13 @@ func TestRealGPGApplyLsignAndNeverDowngrade(t *testing.T) {
 		t.Fatalf("apply vip: %v", err)
 	}
 	trust := run("--export-ownertrust")
-	if !strings.Contains(trust, bobFpr+":5:") {
-		t.Fatalf("never-downgrade violated: bob ownertrust not still 5:\n%s", trust)
+	if !strings.Contains(trust, bobFpr+":6:") {
+		t.Fatalf("never-downgrade violated: bob ultimate (6) not preserved:\n%s", trust)
 	}
-	if strings.Contains(trust, bobFpr+":4:") {
-		t.Fatalf("bob was downgraded to 4:\n%s", trust)
+	if !strings.Contains(trust, charlieFpr+":5:") {
+		t.Fatalf("--full did not set fresh key to full (5):\n%s", trust)
+	}
+	if strings.Contains(trust, charlieFpr+":4:") {
+		t.Fatalf("--full wrote marginal (4) instead of full (5):\n%s", trust)
 	}
 }

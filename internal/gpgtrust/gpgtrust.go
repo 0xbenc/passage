@@ -29,7 +29,7 @@ const (
 	// Lsign local-signs each fixable recipient — enough to make it a valid
 	// encryption target — and is the default.
 	Lsign Strength = iota
-	// Full additionally raises ownertrust to full (4), enabling web-of-trust
+	// Full additionally raises ownertrust to full (5), enabling web-of-trust
 	// propagation passage does not strictly need.
 	Full
 )
@@ -264,7 +264,7 @@ func (t Truster) Apply(ctx context.Context, plan Plan, strength Strength, dryRun
 		report.Results = append(report.Results, res)
 	}
 
-	// 3) Optionally raise ownertrust to full (4), never downgrading 4/5.
+	// 3) Optionally raise ownertrust to full (5), never downgrading 5/6.
 	if strength == Full && len(toFull) > 0 {
 		applied, err := t.applyOwnerTrust(ctx, toFull)
 		if err != nil {
@@ -303,11 +303,12 @@ func (t Truster) applyOwnerTrust(ctx context.Context, results []ApplyResult) ([]
 			continue
 		}
 		seen[fp] = true
-		// Never downgrade an existing full (4) or ultimate (5) trust.
-		if lvl := trust[fp]; lvl == "4" || lvl == "5" {
+		// Never downgrade an existing full (5) or ultimate (6) trust. gpg's
+		// ownertrust values are 4=marginal, 5=full, 6=ultimate.
+		if lvl := trust[fp]; lvl == "5" || lvl == "6" {
 			continue
 		}
-		lines = append(lines, fp+":4:")
+		lines = append(lines, fp+":5:")
 		applied = append(applied, fp)
 	}
 	if len(applied) == 0 {

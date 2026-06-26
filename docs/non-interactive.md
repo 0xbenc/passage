@@ -162,7 +162,7 @@ Makes a read-only scope writable by local-signing the recipients gpg cannot yet
 encrypt to (the Go-native port of bash-zoo's `gpgobble`). `SCOPE` is an entry
 path or folder; its nearest `.gpg-id` governs. Default strength is **local-sign
 only** — exactly the validity pass needs — while `--full` additionally raises
-ownertrust to full (4), never downgrading an existing 4/5.
+ownertrust to full (5), never downgrading an existing 5/6.
 
 - `--import-dir DIR` imports every public-key file in `DIR` and trusts them all
   (gpgobble parity), instead of a store scope's recipients.

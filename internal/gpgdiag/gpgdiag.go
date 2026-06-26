@@ -238,8 +238,28 @@ func (c Checker) reportForRecipients(ctx context.Context, ids []string) ScopeRep
 		report.Verdict = VerdictUninitialized
 		return report
 	}
+	// The authoritative writable gate is a single probe-encrypt to ALL
+	// recipients — exactly what `pass` does. Relying on it (rather than on the
+	// per-recipient buckets) means an owned-but-unusable recipient — e.g. your
+	// own expired key, which `--list-secret-keys` still reports — cannot produce
+	// a false "writable" that would let `pass insert` fail mid-encrypt.
+	if c.scopeWritable(ctx, ids) {
+		// Every recipient is a valid target; only split owned vs encryptable for
+		// display (one cheap secret-key check each, no probes).
+		for _, id := range ids {
+			if c.hasSecret(ctx, id) {
+				report.Owned = append(report.Owned, id)
+			} else {
+				report.Encryptable = append(report.Encryptable, id)
+			}
+		}
+		report.Verdict = VerdictWritable
+		report.Status = "writable"
+		return report
+	}
+	// Not writable: classify each recipient to surface the blockers and decide
+	// read-only (you own a secret key, so you can still decrypt) vs no-access.
 	owned := false
-	blocked := false
 	for _, id := range ids {
 		switch c.recipientStatus(ctx, id) {
 		case RecipientOwned:
@@ -249,23 +269,16 @@ func (c Checker) reportForRecipients(ctx context.Context, ids []string) ScopeRep
 			report.Encryptable = append(report.Encryptable, id)
 		case RecipientInvalid:
 			report.Invalid = append(report.Invalid, id)
-			blocked = true
 		case RecipientUnusable:
 			report.Unusable = append(report.Unusable, id)
-			blocked = true
 		default:
 			report.Missing = append(report.Missing, id)
-			blocked = true
 		}
 	}
-	switch {
-	case !blocked:
-		report.Verdict = VerdictWritable
-		report.Status = "writable"
-	case owned:
+	if owned {
 		report.Verdict = VerdictReadOnly
 		report.Status = "read-only"
-	default:
+	} else {
 		report.Verdict = VerdictNoAccess
 		report.Status = "no access"
 	}
@@ -514,18 +527,23 @@ func relScope(root, dir string) string {
 	return filepath.ToSlash(rel)
 }
 
+// OwnerTrustLabel maps a gpg ownertrust value to its name. The trustdb encoding
+// is 0=unknown, 1=expired, 2=undefined, 3=never, 4=marginal, 5=full,
+// 6=ultimate (verified empirically — an own key auto-trusts to 6).
 func OwnerTrustLabel(level string) string {
 	switch level {
-	case "5":
+	case "6":
 		return "ultimate"
-	case "4":
+	case "5":
 		return "full"
-	case "3":
+	case "4":
 		return "marginal"
-	case "2":
+	case "3":
 		return "never"
+	case "2":
+		return "undefined"
 	case "1":
-		return "unknown"
+		return "expired"
 	default:
 		return "unset"
 	}

@@ -136,7 +136,7 @@ const trustUsage = `Usage:
 Makes a read-only scope writable by local-signing the recipients gpg cannot
 yet encrypt to. SCOPE is an entry path or folder; its nearest .gpg-id governs.
 Default strength is local-sign only (enough for encryption); --full also raises
-ownertrust to full (4), never downgrading existing 4/5.
+ownertrust to full (5), never downgrading existing 5/6.
 
   --import-dir DIR  Import every public-key file in DIR and trust them all
                     (gpgobble parity), instead of a store scope's recipients.
@@ -1752,6 +1752,10 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 		}
 		return ui.ActionOutcome{Message: "Unpinned " + req.Entry.Path + ".", Entries: entries}
 	case ui.ActionNew:
+		if _, exists := findEntry(rt.entries, req.NewPath); exists {
+			zero(req.Content)
+			return ui.ActionOutcome{Err: fmt.Errorf("entry %q already exists — edit it with E", req.NewPath)}
+		}
 		if err := r.preflightWritable(ctx, rt.storeDir, req.NewPath); err != nil {
 			zero(req.Content)
 			return ui.ActionOutcome{Err: err}
@@ -1767,6 +1771,9 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 		}
 		return ui.ActionOutcome{Message: "Created " + req.NewPath + ".", Entries: entries}
 	case ui.ActionGenerate:
+		if _, exists := findEntry(rt.entries, req.NewPath); exists {
+			return ui.ActionOutcome{Err: fmt.Errorf("entry %q already exists — edit it with E", req.NewPath)}
+		}
 		if err := r.preflightWritable(ctx, rt.storeDir, req.NewPath); err != nil {
 			return ui.ActionOutcome{Err: err}
 		}
