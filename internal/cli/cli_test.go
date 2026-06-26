@@ -203,6 +203,110 @@ if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then printf '
 	}
 }
 
+// fakeGPGScript is a stub gpg driven by env vars, mirroring the verdict
+// engine's needs (see gpgdiag tests).
+const fakeGPGScript = `contains() { case " $2 " in *" $1 "*) return 0;; esac; return 1; }
+mode=""; listid=""; recipients=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list-secret-keys) mode=secret; shift; listid="$1"; shift ;;
+    --list-keys) mode=listkeys; shift
+      if [ $# -gt 0 ]; then case "$1" in --*) ;; *) listid="$1"; shift ;; esac; fi ;;
+    --encrypt) mode=encrypt; shift ;;
+    --recipient) shift; recipients="$recipients $1"; shift ;;
+    --output) shift; shift ;;
+    --export-ownertrust) mode=ownertrust; shift ;;
+    *) shift ;;
+  esac
+done
+case "$mode" in
+  secret) contains "$listid" "$GPG_FAKE_SECRET" && exit 0; exit 2 ;;
+  encrypt) for r in $recipients; do contains "$r" "$GPG_FAKE_ENCRYPTABLE" || exit 2; done; exit 0 ;;
+  ownertrust) exit 0 ;;
+  listkeys)
+    if [ -n "$listid" ]; then
+      if contains "$listid" "$GPG_FAKE_PRESENT" || contains "$listid" "$GPG_FAKE_SECRET"; then
+        printf 'pub:-:\nfpr:::::::::%s:\nuid:-:::::::::%s:\n' "$listid" "$listid"; exit 0
+      fi
+      exit 2
+    fi ;;
+esac
+exit 0`
+
+func TestRunAccessJSON(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, root, "owner")
+	writeGPGIDFile(t, filepath.Join(root, "work"), "owner", "carol")
+
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	t.Setenv("PATH", bin)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner carol")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"access", "--json", "--store-dir", root}, &stdout, &stderr, BuildInfo{})
+	// Exit 2 because the work scope is read-only.
+	if code != 2 {
+		t.Fatalf("Run access = %d, want 2; stderr=%s\nstdout=%s", code, stderr.String(), stdout.String())
+	}
+	var got struct {
+		SchemaVersion int `json:"schema_version"`
+		Scopes        []struct {
+			Label   string `json:"label"`
+			Verdict string `json:"verdict"`
+			Fixable string `json:"fixable"`
+		} `json:"scopes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if got.SchemaVersion != 1 {
+		t.Fatalf("schema_version = %d", got.SchemaVersion)
+	}
+	verdicts := map[string]string{}
+	for _, s := range got.Scopes {
+		verdicts[s.Label] = s.Verdict
+	}
+	if verdicts["default"] != "writable" {
+		t.Errorf("default verdict = %q, want writable", verdicts["default"])
+	}
+	if verdicts["work"] != "read_only" {
+		t.Errorf("work verdict = %q, want read_only", verdicts["work"])
+	}
+}
+
+func TestRunAccessSingleEntryWritable(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, root, "owner")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	t.Setenv("PATH", bin)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"access", "personal/bank", "--store-dir", root}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run access entry = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "writable") {
+		t.Fatalf("output missing writable verdict:\n%s", stdout.String())
+	}
+}
+
+func writeGPGIDFile(t *testing.T, dir string, ids ...string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gpg-id"), []byte(strings.Join(ids, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write .gpg-id: %v", err)
+	}
+}
+
 func fakeStore(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

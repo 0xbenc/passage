@@ -59,6 +59,19 @@ Clear local metadata or clipboard contents.
 .B doctor
 Check pass, gpg, clipboard tools, and .gpg-id recipient health.
 .TP
+.B access
+Report, per .gpg-id scope, whether you can encrypt to all recipients
+.RB ( writable ),
+can only decrypt
+.RB ( "read-only" ),
+or neither
+.RB ( "no access" ).
+Writability is decided by a real probe-encrypt, not by ownertrust. With an
+optional
+.I ENTRY
+argument, reports only the scope governing it. Exits 2 when any reported scope
+is not writable.
+.TP
 .B keys
 List local GPG public keys, ownertrust, and secret-key availability.
 .TP

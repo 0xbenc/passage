@@ -24,6 +24,8 @@ the same `entry/mfa` convention used by the old script.
 - Old Bash TSV state migration from `bash-zoo/passage` and `bash-zoo/pass-browse`.
 - Scriptable commands with stable JSON envelopes.
 - `doctor` checks for `pass`, `gpg`, clipboard tools, and `.gpg-id` recipient health.
+- `access` reports, per `.gpg-id` scope, whether you can write (encrypt to every
+  recipient) or are effectively read-only — decided by a real probe-encrypt.
 - GoReleaser archives, Linux packages, and Homebrew cask publishing.
 
 ## Install

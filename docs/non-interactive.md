@@ -99,6 +99,33 @@ passage doctor [--json] [--store-dir PATH]
 
 Checks for `pass`, `gpg`, clipboard tools, and `.gpg-id` recipient health.
 
+### access
+
+```sh
+passage access [ENTRY] [--json] [--store-dir PATH]
+```
+
+Reports, per `.gpg-id` scope, whether you can write (encrypt to every
+recipient). Each scope's `verdict` is one of:
+
+- `writable` — gpg can encrypt to all recipients; `pass insert/edit` will work.
+- `read_only` — you own a recipient (can decrypt) but at least one recipient is
+  not a valid encryption target, so writes would fail.
+- `no_access` — cannot encrypt to all recipients and you own none.
+- `uninitialized` — no `.gpg-id` governs the path.
+
+Writability is decided by a real probe-encrypt (`gpg --encrypt` to the literal
+recipients), not by ownertrust — a locally-signed key counts as writable. When
+not writable, `fixable` hints the remedy: `trust` (local-sign present keys),
+`import` (a recipient key is missing), or `unfixable` (expired/revoked). With an
+`ENTRY` (or folder path) argument, only the governing scope is reported. The
+command exits `2` when any reported scope is not writable.
+
+JSON envelope: `schema_version`, `store_root`, optional `entry`, and `scopes[]`
+with `label`, `scope`, `gpg_id_path`, `verdict`, `recipient_count`, the
+recipient buckets (`owned`, `encryptable`, `invalid`, `unusable`, `missing`),
+and `fixable`.
+
 ### keys
 
 ```sh
@@ -127,4 +154,4 @@ built: DATE
 | --- | --- |
 | `0` | Success. |
 | `1` | Usage, validation, decrypt, write, or runtime failure. |
-| `2` | Entry not found or doctor warnings. |
+| `2` | Entry not found, doctor warnings, or a non-writable `access` scope. |

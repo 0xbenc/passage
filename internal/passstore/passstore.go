@@ -108,6 +108,99 @@ func (s Store) Discover() ([]string, error) {
 	return compactSorted(entries), nil
 }
 
+// ParseGPGID splits a .gpg-id file into recipient tokens, one per non-blank
+// line. Recipients may be full fingerprints, key-ids, or email selectors —
+// exactly the forms `pass` itself feeds to `gpg -r`.
+func ParseGPGID(data []byte) []string {
+	var ids []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			ids = append(ids, line)
+		}
+	}
+	return ids
+}
+
+// ResolveRecipientsFile finds the .gpg-id that governs an entry, mirroring
+// pass's rule exactly: walk up from startDir to the store root and use the
+// first .gpg-id found. startDir and root are absolute paths; startDir must be
+// at or below root. It returns the .gpg-id path, its parsed recipients, and ok
+// = false when no .gpg-id exists anywhere up to the root (an uninitialized
+// scope).
+func ResolveRecipientsFile(root, startDir string) (gpgIDPath string, ids []string, ok bool, err error) {
+	root = filepath.Clean(root)
+	dir := filepath.Clean(startDir)
+	for {
+		candidate := filepath.Join(dir, ".gpg-id")
+		data, readErr := os.ReadFile(candidate)
+		if readErr == nil {
+			return candidate, ParseGPGID(data), true, nil
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return "", nil, false, fmt.Errorf("read %s: %w", candidate, readErr)
+		}
+		if dir == root {
+			return "", nil, false, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir || len(parent) < len(root) {
+			return "", nil, false, nil
+		}
+		dir = parent
+	}
+}
+
+// ScopeDirs enumerates every directory in the store that carries its own
+// .gpg-id, at any depth, as paths relative to root with the root itself
+// represented by "". The result is the set of distinct recipient scopes a
+// caller must verify — replacing any assumption that scopes live only one
+// level below the root.
+func ScopeDirs(root string) ([]string, error) {
+	root = filepath.Clean(root)
+	info, err := os.Stat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("password store directory %s does not exist", root)
+		}
+		return nil, fmt.Errorf("stat password store %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("password store path %s is not a directory", root)
+	}
+	var scopes []string
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if path != root && (name == ".git" || name == ".gpg") {
+			return filepath.SkipDir
+		}
+		if _, statErr := os.Stat(filepath.Join(path, ".gpg-id")); statErr == nil {
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			if rel == "." {
+				rel = ""
+			} else {
+				rel = filepath.ToSlash(rel)
+			}
+			scopes = append(scopes, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk password store %s: %w", root, err)
+	}
+	sort.Strings(scopes)
+	return scopes, nil
+}
+
 func BuildEntries(paths []string, st state.State) []Entry {
 	known := make(map[string]struct{}, len(paths))
 	for _, path := range paths {

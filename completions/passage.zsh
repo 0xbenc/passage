@@ -15,6 +15,7 @@ _passage() {
     'clear-pins:Clear all pins'
     'clear-clipboard:Clear the clipboard'
     'doctor:Run health checks'
+    'access:Report write access per .gpg-id scope'
     'keys:List local GPG keys'
     'theme:Open the theme builder'
     'version:Print version'

@@ -11,6 +11,7 @@ complete -c passage -n "__fish_use_subcommand" -a "clear-recents" -d "Clear rece
 complete -c passage -n "__fish_use_subcommand" -a "clear-pins" -d "Clear pins"
 complete -c passage -n "__fish_use_subcommand" -a "clear-clipboard" -d "Clear clipboard"
 complete -c passage -n "__fish_use_subcommand" -a "doctor" -d "Run health checks"
+complete -c passage -n "__fish_use_subcommand" -a "access" -d "Report write access per scope"
 complete -c passage -n "__fish_use_subcommand" -a "keys" -d "List GPG keys"
 complete -c passage -n "__fish_use_subcommand" -a "theme" -d "Open the theme builder"
 complete -c passage -n "__fish_use_subcommand" -a "version" -d "Print version"

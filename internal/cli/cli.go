@@ -38,6 +38,7 @@ Commands:
   clear-pins       Clear all pins
   clear-clipboard  Clear the clipboard
   doctor           Check pass, gpg, clipboard, and .gpg-id health
+  access           Report whether you can write (encrypt) per .gpg-id scope
   keys             List local GPG public keys
   theme            Open the theme builder (choose a base palette, tune colors)
   version          Print build version information
@@ -83,6 +84,15 @@ The same builder is reachable from the homepage with Ctrl-O.
                termtheme-based app (e.g. ssherpa) can import.
   import PATH  Replace the active theme with a .theme file (backs up the
                previous one). Roles this app does not use are preserved.
+`
+
+const accessUsage = `Usage:
+  passage access [ENTRY] [--json] [--store-dir PATH]
+
+Reports, per .gpg-id scope, whether you can encrypt to all recipients
+(writable), can only decrypt (read-only), or neither (no access). With an
+ENTRY (or folder path), reports just the scope governing it. Exits 2 when any
+reported scope is not writable.
 `
 
 const keysUsage = `Usage:
@@ -185,6 +195,8 @@ func (r runner) run(args []string) int {
 		return r.runClearClipboard(args[1:])
 	case "doctor":
 		return r.runDoctor(args[1:])
+	case "access":
+		return r.runAccess(args[1:])
 	case "keys":
 		return r.runKeys(args[1:])
 	case "theme":
@@ -216,6 +228,8 @@ func (r runner) runHelp(args []string) int {
 		fmt.Fprint(r.stdout, totpUsage)
 	case "doctor":
 		fmt.Fprint(r.stdout, doctorUsage)
+	case "access":
+		fmt.Fprint(r.stdout, accessUsage)
 	case "keys":
 		fmt.Fprint(r.stdout, keysUsage)
 	case "theme":
@@ -900,6 +914,72 @@ func (r runner) runDoctor(args []string) int {
 	return 0
 }
 
+func (r runner) runAccess(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, accessUsage)
+		return 0
+	}
+	if len(rest) > 1 {
+		fmt.Fprintf(r.stderr, "passage: access accepts at most one ENTRY: %s\n", strings.Join(rest, " "))
+		return 1
+	}
+	storeDir, err := r.storeDir(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	ctx := context.Background()
+	checker := gpgdiag.New(storeDir)
+	var report gpgdiag.AccessReport
+	if len(rest) == 1 {
+		scope, err := checker.Access(ctx, rest[0])
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		report = gpgdiag.AccessReport{
+			SchemaVersion: 1,
+			StoreRoot:     storeDir,
+			Entry:         rest[0],
+			Scopes:        []gpgdiag.ScopeReport{scope},
+		}
+		if scope.Verdict != gpgdiag.VerdictWritable {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: %s", scope.Label, scope.Status))
+		}
+	} else {
+		report, err = checker.AccessAll(ctx)
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		report.StoreRoot = storeDir
+	}
+	notWritable := false
+	for _, s := range report.Scopes {
+		if s.Verdict != gpgdiag.VerdictWritable {
+			notWritable = true
+		}
+	}
+	if flags.json {
+		if code := writeJSON(r.stdout, report); code != 0 {
+			return code
+		}
+	} else {
+		for _, line := range accessLines(report) {
+			fmt.Fprintln(r.stdout, line)
+		}
+	}
+	if notWritable {
+		return 2
+	}
+	return 0
+}
+
 func (r runner) runKeys(args []string) int {
 	flags, rest, err := parseCommon(args)
 	if err != nil {
@@ -1459,17 +1539,64 @@ func doctorLines(report gpgdiag.DoctorReport) []string {
 		"stores:",
 	}
 	for _, store := range report.Stores {
-		lines = append(lines, fmt.Sprintf("  %s  %s  recipients=%d", store.Label, store.Status, store.RecipientCount))
-		if len(store.Missing) > 0 {
-			lines = append(lines, "    missing: "+strings.Join(store.Missing, ", "))
-		}
-		if len(store.Untrusted) > 0 {
-			lines = append(lines, "    untrusted: "+strings.Join(store.Untrusted, ", "))
-		}
+		lines = append(lines, scopeStatusLines(store)...)
 	}
 	if len(report.Warnings) > 0 {
 		lines = append(lines, "", "warnings:")
 		lines = append(lines, prefixLines(report.Warnings, "  ")...)
+	}
+	return lines
+}
+
+// scopeStatusLines renders one scope's verdict plus the blocking recipients,
+// shared by `doctor` and `access`.
+func scopeStatusLines(scope gpgdiag.ScopeReport) []string {
+	lines := []string{fmt.Sprintf("  %s  %s  recipients=%d", scope.Label, scope.Status, scope.RecipientCount)}
+	if len(scope.Invalid) > 0 {
+		lines = append(lines, "    invalid (local-sign to fix): "+strings.Join(scope.Invalid, ", "))
+	}
+	if len(scope.Unusable) > 0 {
+		lines = append(lines, "    unusable (expired/revoked): "+strings.Join(scope.Unusable, ", "))
+	}
+	if len(scope.Missing) > 0 {
+		lines = append(lines, "    missing (import needed): "+strings.Join(scope.Missing, ", "))
+	}
+	if scope.Fixable != "" {
+		lines = append(lines, "    fix: "+fixableHint(scope.Fixable))
+	}
+	return lines
+}
+
+func fixableHint(kind string) string {
+	switch kind {
+	case "trust":
+		return "passage trust"
+	case "import":
+		return "passage trust --import-dir DIR"
+	case "unfixable":
+		return "recipients are expired/revoked — keys must be renewed"
+	default:
+		return kind
+	}
+}
+
+func accessLines(report gpgdiag.AccessReport) []string {
+	lines := []string{"store: " + report.StoreRoot}
+	if report.Entry != "" {
+		lines = append(lines, "entry: "+report.Entry)
+	}
+	lines = append(lines, "", "scopes:")
+	for _, scope := range report.Scopes {
+		lines = append(lines, scopeStatusLines(scope)...)
+		if len(scope.Owned) > 0 {
+			lines = append(lines, "    owned: "+strings.Join(scope.Owned, ", "))
+		}
+		if len(scope.Encryptable) > 0 {
+			lines = append(lines, "    encryptable: "+strings.Join(scope.Encryptable, ", "))
+		}
+		if scope.GPGIDPath != "" {
+			lines = append(lines, "    .gpg-id: "+scope.GPGIDPath)
+		}
 	}
 	return lines
 }
