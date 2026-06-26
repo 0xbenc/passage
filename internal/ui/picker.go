@@ -27,22 +27,51 @@ const (
 	ActionClearRecents   Action = "clear_recents"
 	ActionDoctor         Action = "doctor"
 	ActionKeys           Action = "keys"
+	ActionNew            Action = "new"
+	ActionGenerate       Action = "generate"
+	ActionEdit           Action = "edit"
+	ActionRemove         Action = "remove"
+	ActionTrust          Action = "trust"
 	ActionQuit           Action = "quit"
 )
 
+// isGapAction reports whether an action must run with the TUI torn down so a
+// child process (pinentry for local-signing, $EDITOR) can own the real
+// terminal. The picker quits returning the request; the CLI runs it in the gap
+// and relaunches the picker (Pattern A).
+func isGapAction(action Action) bool {
+	return action == ActionEdit || action == ActionTrust
+}
+
+// isWriteAction reports whether an action mutates the store (used to widen the
+// action timeout, since encryption + a possible git commit-signing prompt can
+// outlast the read timeout).
+func isWriteAction(action Action) bool {
+	switch action {
+	case ActionNew, ActionGenerate, ActionRemove:
+		return true
+	default:
+		return false
+	}
+}
+
 type PickOptions struct {
-	Input        io.Reader
-	Output       io.Writer
-	NoAltScreen  bool
-	NoColor      bool
-	Theme        termstyle.Theme
-	ThemeFile    string
-	Title        string
-	Version      string
-	StoreRoot    string
-	Filter       string
-	MFAOnly      bool
-	Message      string
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	NoColor     bool
+	Theme       termstyle.Theme
+	ThemeFile   string
+	Title       string
+	Version     string
+	StoreRoot   string
+	Filter      string
+	MFAOnly     bool
+	Message     string
+	MessageErr  bool
+	// SelectPath restores the cursor to this entry path after a relaunch, so a
+	// Pattern-A gap action does not reset the user's place in the list.
+	SelectPath   string
 	RunAction    ActionRunner
 	ThemeConfig  termstyle.ThemeConfig
 	ThemePath    string
@@ -248,6 +277,7 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		version:        strings.TrimSpace(opts.Version),
 		storeRoot:      opts.StoreRoot,
 		message:        opts.Message,
+		messageErr:     opts.MessageErr,
 		noAltScreen:    opts.NoAltScreen,
 		width:          92,
 		height:         28,
@@ -265,6 +295,15 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		model.glyphs = termstyle.DefaultGlyphs()
 	}
 	model.applyFilter()
+	if path := strings.TrimSpace(opts.SelectPath); path != "" {
+		for i, ranked := range model.filtered {
+			if model.entries[ranked.Index].Path == path {
+				model.cursor = i
+				break
+			}
+		}
+		model.ensureVisible()
+	}
 	return model
 }
 
@@ -389,11 +428,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+k":
 			return m.trigger(ActionKeys)
 		default:
-			// "?" opens the key reference only when the filter is empty, so a
-			// path containing "?" can still be typed into a non-empty filter.
-			if msg.Text == "?" && m.query == "" {
-				m.help = true
-				return m, nil
+			// Single-letter command keys fire only when the filter is empty, so
+			// a path containing them can still be typed into a non-empty filter.
+			if m.query == "" {
+				switch msg.Text {
+				case "?":
+					m.help = true
+					return m, nil
+				case "e":
+					return m.trigger(ActionEdit)
+				case "t":
+					return m.trigger(ActionTrust)
+				}
 			}
 			if safeTextInput(msg.Text) && !isControlKey(key) {
 				m.query += msg.Text
@@ -1054,6 +1100,17 @@ func (m *pickerModel) maybeStartTick() tea.Cmd {
 }
 
 func (m pickerModel) trigger(action Action) (pickerModel, tea.Cmd) {
+	if isGapAction(action) {
+		// These need the real terminal (pinentry / $EDITOR), so quit and let the
+		// CLI run them in the gap, then relaunch us.
+		if actionNeedsEntry(action) {
+			if _, ok := m.selectedEntry(); !ok {
+				m.setNotice("No entry selected.", true)
+				return m, nil
+			}
+		}
+		return m.finish(action), tea.Quit
+	}
 	if m.runAction == nil {
 		switch action {
 		case ActionClearClipboard, ActionClearPins, ActionClearRecents, ActionDoctor, ActionKeys:
@@ -1499,7 +1556,7 @@ func (m pickerModel) maxModalOffset() int {
 
 func actionNeedsEntry(action Action) bool {
 	switch action {
-	case ActionCopy, ActionReveal, ActionTOTP, ActionTogglePin:
+	case ActionCopy, ActionReveal, ActionTOTP, ActionTogglePin, ActionEdit, ActionTrust, ActionGenerate, ActionRemove:
 		return true
 	default:
 		return false

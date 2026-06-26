@@ -113,6 +113,59 @@ func TestPickerPrintableTextFilters(t *testing.T) {
 	}
 }
 
+func TestPickerEditAndTrustKeysTriggerGapActionsWhenEmpty(t *testing.T) {
+	cases := []struct {
+		key  string
+		want Action
+	}{
+		{"e", ActionEdit},
+		{"t", ActionTrust},
+	}
+	for _, tc := range cases {
+		model := newPickerModel([]passstore.Entry{
+			{Path: "work/github", Display: "work/github"},
+		}, PickOptions{}, termstyle.TerminalTheme())
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: tc.key}))
+		got := updated.(pickerModel)
+		if got.action != tc.want {
+			t.Fatalf("key %q: action = %q, want %q", tc.key, got.action, tc.want)
+		}
+		if got.query != "" {
+			t.Fatalf("key %q leaked into filter: %q", tc.key, got.query)
+		}
+	}
+}
+
+func TestPickerEditTrustKeysFilterWhenQueryNonEmpty(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "tea", Display: "tea"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+	// First a non-bound char so the query is non-empty, then "t" must filter.
+	for _, ch := range []string{"x", "t", "e"} {
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: ch}))
+		model = updated.(pickerModel)
+	}
+	if model.action != ActionNone {
+		t.Fatalf("action = %q, want none (letters must filter once typing)", model.action)
+	}
+	if model.query != "xte" {
+		t.Fatalf("query = %q, want xte", model.query)
+	}
+}
+
+func TestPickerSelectPathRestoresCursor(t *testing.T) {
+	entries := []passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+		{Path: "beta", Display: "beta"},
+		{Path: "gamma", Display: "gamma"},
+	}
+	model := newPickerModel(entries, PickOptions{SelectPath: "gamma"}, termstyle.TerminalTheme())
+	got, ok := model.selectedEntry()
+	if !ok || got.Path != "gamma" {
+		t.Fatalf("selected = %q (ok=%v), want gamma", got.Path, ok)
+	}
+}
+
 func TestPickerCommandLettersFilterInsteadOfActing(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "commandletters", Display: "commandletters"},

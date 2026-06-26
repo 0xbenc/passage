@@ -364,37 +364,123 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		}
 		themeWarning += warning
 	}
-	_, err = ui.Pick(ctx, rt.entries, ui.PickOptions{
-		Output:      r.stderr,
-		NoColor:     flags.noColor,
-		Theme:       theme,
-		ThemeFile:   flags.themeFile,
-		Title:       "passage",
-		Version:     r.build.Version,
-		StoreRoot:   rt.storeDir,
-		Filter:      filter,
-		MFAOnly:     mfaOnly,
-		NoAltScreen: flags.noAltScreen,
-		Glyphs:      termstyle.ResolveGlyphs(r.env),
-		ClearClipboard: func(clearCtx context.Context) error {
-			_, err := clipboard.Clear(clearCtx)
-			return err
-		},
-		ThemeConfig:  themeConfig,
-		ThemePath:    themePath,
-		ThemeWarning: themeWarning,
-		SaveTheme: func(saveCtx context.Context, result ui.ThemeEditorResult) (ui.ThemeSaveResult, error) {
-			return r.saveThemeConfig(saveCtx, flags, result)
-		},
-		RunAction: func(actionCtx context.Context, req ui.ActionRequest) ui.ActionOutcome {
-			return r.runInteractiveAction(actionCtx, &rt, flags, req)
-		},
-	})
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
+	// Pattern A: the picker runs as its own program; a terminal-grabbing action
+	// (edit / trust) quits returning a request, which we run here with the
+	// program torn down (the real tty restored) before relaunching the picker.
+	selectPath := ""
+	message := ""
+	messageErr := false
+	for {
+		result, err := ui.Pick(ctx, rt.entries, ui.PickOptions{
+			Output:      r.stderr,
+			NoColor:     flags.noColor,
+			Theme:       theme,
+			ThemeFile:   flags.themeFile,
+			Title:       "passage",
+			Version:     r.build.Version,
+			StoreRoot:   rt.storeDir,
+			Filter:      filter,
+			MFAOnly:     mfaOnly,
+			Message:     message,
+			MessageErr:  messageErr,
+			SelectPath:  selectPath,
+			NoAltScreen: flags.noAltScreen,
+			Glyphs:      termstyle.ResolveGlyphs(r.env),
+			ClearClipboard: func(clearCtx context.Context) error {
+				_, err := clipboard.Clear(clearCtx)
+				return err
+			},
+			ThemeConfig:  themeConfig,
+			ThemePath:    themePath,
+			ThemeWarning: themeWarning,
+			SaveTheme: func(saveCtx context.Context, res ui.ThemeEditorResult) (ui.ThemeSaveResult, error) {
+				return r.saveThemeConfig(saveCtx, flags, res)
+			},
+			RunAction: func(actionCtx context.Context, req ui.ActionRequest) ui.ActionOutcome {
+				return r.runInteractiveAction(actionCtx, &rt, flags, req)
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		filter = result.Filter
+		mfaOnly = result.MFAOnly
+		message = ""
+		messageErr = false
+		switch result.Action {
+		case ui.ActionEdit:
+			message, messageErr = r.gapEdit(ctx, &rt, result.Entry)
+		case ui.ActionTrust:
+			message, messageErr = r.gapTrust(ctx, &rt, result.Entry)
+		default:
+			return 0
+		}
+		selectPath = result.Entry.Path
+		if _, refreshErr := r.refreshInteractive(&rt, flags); refreshErr != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", refreshErr)
+			return 1
+		}
 	}
-	return 0
+}
+
+// gapEdit runs `pass edit` ($EDITOR) for the selected entry with the picker torn
+// down, so the editor owns the real terminal. Returns the message (and whether
+// it is an error) to surface on the relaunched picker.
+func (r runner) gapEdit(ctx context.Context, rt *runtimeState, entry passstore.Entry) (string, bool) {
+	if entry.Path == "" {
+		return "", false
+	}
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry.Path); err != nil {
+		return "Cannot edit: " + err.Error(), true
+	}
+	if err := rt.store.Edit(context.Background(), entry.Path); err != nil {
+		return "Edit failed: " + err.Error(), true
+	}
+	return "Edited " + entry.Path + ".", false
+}
+
+// gapTrust runs the trust flow (preview, confirm, local-sign) for the selected
+// entry's scope with the picker torn down, so pinentry can prompt on the real
+// terminal.
+func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.Entry) (string, bool) {
+	if entry.Path == "" {
+		return "", false
+	}
+	passstore.SetupGPGTTY(ctx, r.env)
+	tr := gpgtrust.New(rt.storeDir)
+	tr.Stdin = os.Stdin
+	tr.Stdout = os.Stderr
+	tr.Stderr = os.Stderr
+	plan, err := tr.PlanRecipients(ctx, entry.Path, gpgtrust.Lsign)
+	if err != nil {
+		return "Trust: " + err.Error(), true
+	}
+	if !plan.Actionable() {
+		return defaultString(plan.Scope, "this folder") + " is already writable.", false
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, line := range trustPlanLines(plan) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Local-sign %d key(s) to make %s writable? [y/N] ", countLsign(plan), defaultString(plan.Scope, "this folder"))) {
+		return "Trust cancelled.", false
+	}
+	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
+	if err != nil {
+		return "Trust failed: " + err.Error(), true
+	}
+	signed := 0
+	for _, res := range report.Results {
+		if res.Signed {
+			signed++
+		}
+	}
+	if report.NowWritable {
+		return fmt.Sprintf("Trusted %d key(s); %s is now writable.", signed, defaultString(plan.Scope, "this folder")), false
+	}
+	return fmt.Sprintf("Local-signed %d key(s), but the folder is still not writable.", signed), true
 }
 
 // firstRunGuidance turns the most common first-run failure — no password store
