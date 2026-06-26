@@ -120,10 +120,32 @@ List local GPG public keys, ownertrust, and secret-key availability.
 Print build version information.
 .SH TUI KEYS
 .PP
-Printable characters always type into the filter.
+Lowercase printable characters always type into the fuzzy filter. The write and
+trust actions are bound to the shifted (uppercase) letters; because matching is
+case-insensitive you never need uppercase to filter, so you can narrow with a
+lowercase filter and then act with a shifted key. Read-only folders show an
+.B RO
+badge (or
+.B NO
+for no-access).
 .TP
 .B Enter
 Run the default action: copy password, or show/copy TOTP on an MFA-secret row.
+.TP
+.B N
+New entry: type a secret or generate one.
+.TP
+.B G
+Generate a new entry.
+.TP
+.B E
+Edit the selected entry in $EDITOR.
+.TP
+.B D
+Delete the selected entry (with confirmation).
+.TP
+.B T
+Trust the selected entry's folder — local-sign recipients to make it writable.
 .TP
 .B Ctrl-Y
 Copy password; in MFA-only mode, show/copy TOTP.

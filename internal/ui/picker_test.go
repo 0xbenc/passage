@@ -113,13 +113,14 @@ func TestPickerPrintableTextFilters(t *testing.T) {
 	}
 }
 
-func TestPickerEditAndTrustKeysTriggerGapActionsWhenEmpty(t *testing.T) {
+func TestPickerShiftedKeysTriggerWriteActions(t *testing.T) {
 	cases := []struct {
 		key  string
 		want Action
 	}{
-		{"e", ActionEdit},
-		{"t", ActionTrust},
+		{"E", ActionEdit},
+		{"T", ActionTrust},
+		{"D", ActionRemove},
 	}
 	for _, tc := range cases {
 		model := newPickerModel([]passstore.Entry{
@@ -127,7 +128,12 @@ func TestPickerEditAndTrustKeysTriggerGapActionsWhenEmpty(t *testing.T) {
 		}, PickOptions{}, termstyle.TerminalTheme())
 		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: tc.key}))
 		got := updated.(pickerModel)
-		if got.action != tc.want {
+		if tc.want == ActionRemove {
+			// Delete opens a confirm rather than acting immediately.
+			if got.confirm == nil || got.confirm.action != ActionRemove {
+				t.Fatalf("key %q did not open a remove confirm: %#v", tc.key, got.confirm)
+			}
+		} else if got.action != tc.want {
 			t.Fatalf("key %q: action = %q, want %q", tc.key, got.action, tc.want)
 		}
 		if got.query != "" {
@@ -136,20 +142,33 @@ func TestPickerEditAndTrustKeysTriggerGapActionsWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestPickerEditTrustKeysFilterWhenQueryNonEmpty(t *testing.T) {
+func TestPickerShiftedNGOpenComposer(t *testing.T) {
+	for _, tc := range []struct {
+		key  string
+		mode composerMode
+	}{{"N", composePassword}, {"G", composeGenerate}} {
+		model := newPickerModel([]passstore.Entry{{Path: "x", Display: "x"}}, PickOptions{}, termstyle.TerminalTheme())
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: tc.key}))
+		got := updated.(pickerModel)
+		if got.composer == nil || got.composer.mode != tc.mode {
+			t.Fatalf("key %q did not open composer mode %v: %#v", tc.key, tc.mode, got.composer)
+		}
+	}
+}
+
+func TestPickerLowercaseStillFiltersDespiteActionKeys(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
-		{Path: "tea", Display: "tea"},
+		{Path: "twitter", Display: "twitter"},
+		{Path: "aws", Display: "aws"},
 	}, PickOptions{}, termstyle.TerminalTheme())
-	// First a non-bound char so the query is non-empty, then "t" must filter.
-	for _, ch := range []string{"x", "t", "e"} {
-		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: ch}))
-		model = updated.(pickerModel)
+	// Lowercase "t" must filter (case-insensitive fuzzy), not trigger trust.
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "t"}))
+	got := updated.(pickerModel)
+	if got.action != ActionNone || got.query != "t" {
+		t.Fatalf("lowercase t acted instead of filtering: action=%q query=%q", got.action, got.query)
 	}
-	if model.action != ActionNone {
-		t.Fatalf("action = %q, want none (letters must filter once typing)", model.action)
-	}
-	if model.query != "xte" {
-		t.Fatalf("query = %q, want xte", model.query)
+	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "twitter" {
+		t.Fatalf("filtered = %#v, want only twitter", got.filtered)
 	}
 }
 

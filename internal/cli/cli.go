@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -154,6 +155,11 @@ const versionUsage = `Usage:
 `
 
 const interactiveActionTimeout = 12 * time.Second
+
+// writeActionTimeout is the deadline for in-program store mutations. It is wider
+// than the read timeout because encryption plus a possible git commit-signing
+// pinentry can outlast 12s.
+const writeActionTimeout = 60 * time.Second
 
 type BuildInfo struct {
 	Version string
@@ -398,6 +404,9 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 			},
 			RunAction: func(actionCtx context.Context, req ui.ActionRequest) ui.ActionOutcome {
 				return r.runInteractiveAction(actionCtx, &rt, flags, req)
+			},
+			LoadAccess: func(loadCtx context.Context) map[string]string {
+				return computeAccess(loadCtx, rt.storeDir, rt.entries)
 			},
 		})
 		if err != nil {
@@ -1136,6 +1145,38 @@ func (r runner) runAccess(args []string) int {
 	return 0
 }
 
+// computeAccess maps each entry path to its scope's write verdict for the TUI
+// badges. It probes once per distinct .gpg-id scope (resolution is cheap
+// filesystem work; the verdict is the expensive part), so a store with a few
+// scopes costs only a few gpg probes regardless of entry count.
+func computeAccess(ctx context.Context, storeDir string, entries []passstore.Entry) map[string]string {
+	checker := gpgdiag.New(storeDir)
+	byScope := map[string]string{} // gpg-id path -> verdict
+	out := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			break
+		}
+		entryDir := filepath.Dir(filepath.Join(storeDir, filepath.FromSlash(entry.Path)))
+		gpgIDPath, _, ok, err := passstore.ResolveRecipientsFile(storeDir, entryDir)
+		if err != nil || !ok {
+			out[entry.Path] = string(gpgdiag.VerdictUninitialized)
+			continue
+		}
+		verdict, cached := byScope[gpgIDPath]
+		if !cached {
+			scope, err := checker.Access(ctx, entry.Path)
+			if err != nil {
+				continue
+			}
+			verdict = string(scope.Verdict)
+			byScope[gpgIDPath] = verdict
+		}
+		out[entry.Path] = verdict
+	}
+	return out
+}
+
 // preflightWritable refuses a store mutation early when the target folder is not
 // writable, with a message pointing at the fix, rather than letting pass
 // hard-fail mid-encrypt.
@@ -1634,7 +1675,11 @@ func (r runner) refreshInteractive(rt *runtimeState, flags commonFlags) ([]passs
 }
 
 func (r runner) runInteractiveAction(parent context.Context, rt *runtimeState, flags commonFlags, req ui.ActionRequest) ui.ActionOutcome {
-	ctx, cancel := context.WithTimeout(parent, interactiveActionTimeout)
+	timeout := interactiveActionTimeout
+	if ui.IsWriteAction(req.Action) {
+		timeout = writeActionTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	out := r.runInteractiveActionOnce(ctx, rt, flags, req)
 	if out.Err != nil {
@@ -1700,6 +1745,55 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 			return ui.ActionOutcome{Message: "Pinned " + req.Entry.Path + ".", Entries: entries}
 		}
 		return ui.ActionOutcome{Message: "Unpinned " + req.Entry.Path + ".", Entries: entries}
+	case ui.ActionNew:
+		if err := r.preflightWritable(ctx, rt.storeDir, req.NewPath); err != nil {
+			zero(req.Content)
+			return ui.ActionOutcome{Err: err}
+		}
+		insertErr := rt.store.Insert(ctx, req.NewPath, req.Content)
+		zero(req.Content)
+		if insertErr != nil {
+			return ui.ActionOutcome{Err: insertErr}
+		}
+		entries, err := r.refreshInteractive(rt, flags)
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		return ui.ActionOutcome{Message: "Created " + req.NewPath + ".", Entries: entries}
+	case ui.ActionGenerate:
+		if err := r.preflightWritable(ctx, rt.storeDir, req.NewPath); err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		password, err := rt.store.Generate(ctx, req.NewPath, passstore.GenerateOptions{NoSymbols: req.NoSymbols, Length: req.Length})
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		res, copyErr := clipboard.Copy(ctx, password)
+		zero(password)
+		entries, refreshErr := r.refreshInteractive(rt, flags)
+		if refreshErr != nil {
+			return ui.ActionOutcome{Err: refreshErr}
+		}
+		out := ui.ActionOutcome{Message: "Generated " + req.NewPath + ".", Entries: entries}
+		if copyErr == nil {
+			out.ClipArmed = true
+			out.ClipRemaining = clipboardArmSeconds
+			out.ClipTool = res.Tool
+			out.Message = "Generated " + req.NewPath + " · copied (" + res.Tool + ")."
+		}
+		return out
+	case ui.ActionRemove:
+		if req.Entry.Path == "" {
+			return ui.ActionOutcome{Err: errors.New("no entry selected")}
+		}
+		if err := rt.store.Remove(ctx, req.Entry.Path, passstore.RemoveOptions{}); err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		entries, err := r.refreshInteractive(rt, flags)
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		return ui.ActionOutcome{Message: "Removed " + req.Entry.Path + ".", Entries: entries}
 	case ui.ActionCopy:
 		msg, tool, err := r.copyEntry(ctx, *rt, req.Entry.Path, false)
 		if err != nil {
@@ -1788,6 +1882,12 @@ func interactiveActionVerb(action ui.Action) string {
 		return "pin clear"
 	case ui.ActionClearRecents:
 		return "recent clear"
+	case ui.ActionNew:
+		return "create"
+	case ui.ActionGenerate:
+		return "generate"
+	case ui.ActionRemove:
+		return "remove"
 	case ui.ActionDoctor:
 		return "doctor"
 	case ui.ActionKeys:
