@@ -362,6 +362,65 @@ func (c Checker) LocalKeys(ctx context.Context) ([]LocalKey, error) {
 	return keys, nil
 }
 
+// RecipientStatus classifies a single recipient selector. Exported for the
+// trust engine so it shares one definition of "encryptable" with the verdict.
+func (c Checker) RecipientStatus(ctx context.Context, id string) RecipientStatus {
+	return c.recipientStatus(ctx, id)
+}
+
+// CanEncryptTo reports whether gpg can encrypt to every listed selector
+// non-interactively (the authoritative writable probe).
+func (c Checker) CanEncryptTo(ctx context.Context, ids ...string) bool {
+	return c.canEncryptTo(ctx, ids...)
+}
+
+// ScopeWritable reports whether a whole recipient set is encryptable in one
+// probe.
+func (c Checker) ScopeWritable(ctx context.Context, ids []string) bool {
+	return c.scopeWritable(ctx, ids)
+}
+
+// HasSecret reports whether a secret key is present for the selector.
+func (c Checker) HasSecret(ctx context.Context, id string) bool {
+	return c.hasSecret(ctx, id)
+}
+
+// OwnerTrust returns the fingerprint→ownertrust-level map (diagnostic only; it
+// does not drive the writable verdict).
+func (c Checker) OwnerTrust(ctx context.Context) (map[string]string, error) {
+	return c.ownerTrust(ctx)
+}
+
+// ResolvePrimary returns the primary fingerprint and primary UID for a
+// recipient selector, or ok=false when it is not in the keyring.
+func (c Checker) ResolvePrimary(ctx context.Context, id string) (fingerprint string, uid string, ok bool) {
+	out, err := c.runGPG(ctx, "--batch", "--with-colons", "--list-keys", id)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return "", "", false
+	}
+	pubPending := false
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 10 {
+			continue
+		}
+		switch fields[0] {
+		case "pub":
+			pubPending = true
+		case "fpr":
+			if pubPending && fingerprint == "" {
+				fingerprint = fields[9]
+				pubPending = false
+			}
+		case "uid":
+			if uid == "" {
+				uid = fields[9]
+			}
+		}
+	}
+	return fingerprint, uid, fingerprint != ""
+}
+
 func (c Checker) hasSecret(ctx context.Context, id string) bool {
 	_, err := c.runGPG(ctx, "--batch", "--quiet", "--list-secret-keys", id)
 	return err == nil

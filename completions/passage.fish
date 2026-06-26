@@ -12,6 +12,7 @@ complete -c passage -n "__fish_use_subcommand" -a "clear-pins" -d "Clear pins"
 complete -c passage -n "__fish_use_subcommand" -a "clear-clipboard" -d "Clear clipboard"
 complete -c passage -n "__fish_use_subcommand" -a "doctor" -d "Run health checks"
 complete -c passage -n "__fish_use_subcommand" -a "access" -d "Report write access per scope"
+complete -c passage -n "__fish_use_subcommand" -a "trust" -d "Local-sign recipients to make a scope writable"
 complete -c passage -n "__fish_use_subcommand" -a "keys" -d "List GPG keys"
 complete -c passage -n "__fish_use_subcommand" -a "theme" -d "Open the theme builder"
 complete -c passage -n "__fish_use_subcommand" -a "version" -d "Print version"
@@ -25,6 +26,9 @@ complete -c passage -l private -d "Do not update recents"
 complete -c passage -l no-copy -d "Do not copy TOTP"
 complete -c passage -l wait -d "Wait for next TOTP near expiry"
 complete -c passage -l at -d "Unix timestamp for TOTP" -r
+complete -c passage -l full -d "Also set ownertrust full"
+complete -c passage -l import-dir -d "Import+trust a folder of public keys" -r
+complete -c passage -l yes -d "Skip confirmation"
 complete -c passage -l no-color -d "Disable color"
 complete -c passage -l theme-file -d "Theme file" -r
 complete -c passage -l no-alt-screen -d "Disable alternate screen"

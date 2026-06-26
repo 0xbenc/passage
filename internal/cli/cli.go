@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/0xbenc/passage/internal/clipboard"
 	"github.com/0xbenc/passage/internal/fsutil"
 	"github.com/0xbenc/passage/internal/gpgdiag"
+	"github.com/0xbenc/passage/internal/gpgtrust"
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/state"
 	"github.com/0xbenc/passage/internal/termstyle"
@@ -39,6 +41,7 @@ Commands:
   clear-clipboard  Clear the clipboard
   doctor           Check pass, gpg, clipboard, and .gpg-id health
   access           Report whether you can write (encrypt) per .gpg-id scope
+  trust            Local-sign recipients to make a read-only scope writable
   keys             List local GPG public keys
   theme            Open the theme builder (choose a base palette, tune colors)
   version          Print build version information
@@ -93,6 +96,23 @@ Reports, per .gpg-id scope, whether you can encrypt to all recipients
 (writable), can only decrypt (read-only), or neither (no access). With an
 ENTRY (or folder path), reports just the scope governing it. Exits 2 when any
 reported scope is not writable.
+`
+
+const trustUsage = `Usage:
+  passage trust [SCOPE] [--full] [--yes] [--json] [--store-dir PATH]
+  passage trust --import-dir DIR [--full] [--yes] [--json] [--store-dir PATH]
+
+Makes a read-only scope writable by local-signing the recipients gpg cannot
+yet encrypt to. SCOPE is an entry path or folder; its nearest .gpg-id governs.
+Default strength is local-sign only (enough for encryption); --full also raises
+ownertrust to full (4), never downgrading existing 4/5.
+
+  --import-dir DIR  Import every public-key file in DIR and trust them all
+                    (gpgobble parity), instead of a store scope's recipients.
+  --yes             Apply without the confirmation prompt.
+  --json            Print the dry-run plan only; never mutates the keyring.
+
+Local-signing your own key may prompt for your passphrase (pinentry).
 `
 
 const keysUsage = `Usage:
@@ -197,6 +217,8 @@ func (r runner) run(args []string) int {
 		return r.runDoctor(args[1:])
 	case "access":
 		return r.runAccess(args[1:])
+	case "trust":
+		return r.runTrust(args[1:])
 	case "keys":
 		return r.runKeys(args[1:])
 	case "theme":
@@ -230,6 +252,8 @@ func (r runner) runHelp(args []string) int {
 		fmt.Fprint(r.stdout, doctorUsage)
 	case "access":
 		fmt.Fprint(r.stdout, accessUsage)
+	case "trust":
+		fmt.Fprint(r.stdout, trustUsage)
 	case "keys":
 		fmt.Fprint(r.stdout, keysUsage)
 	case "theme":
@@ -978,6 +1002,171 @@ func (r runner) runAccess(args []string) int {
 		return 2
 	}
 	return 0
+}
+
+func (r runner) runTrust(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	full := consumeBoolFlag(&rest, "--full")
+	yes := consumeBoolFlag(&rest, "--yes")
+	importDir, _ := consumeStringFlag(&rest, "--import-dir")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, trustUsage)
+		return 0
+	}
+	if len(rest) > 1 {
+		fmt.Fprintf(r.stderr, "passage: trust accepts at most one SCOPE: %s\n", strings.Join(rest, " "))
+		return 1
+	}
+	storeDir, err := r.storeDir(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	strength := gpgtrust.Lsign
+	if full {
+		strength = gpgtrust.Full
+	}
+	tr := gpgtrust.New(storeDir)
+	tr.Stdin = os.Stdin
+	// Keep stdout clean for --json; route pinentry/log to stderr.
+	tr.Stdout = r.stderr
+	tr.Stderr = r.stderr
+
+	var plan gpgtrust.Plan
+	if strings.TrimSpace(importDir) != "" {
+		plan, err = tr.PlanImportDir(ctx, importDir, strength)
+	} else {
+		scope := ""
+		if len(rest) == 1 {
+			scope = rest[0]
+		}
+		plan, err = tr.PlanRecipients(ctx, scope, strength)
+	}
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if flags.json {
+		return writeJSON(r.stdout, plan)
+	}
+	for _, line := range trustPlanLines(plan) {
+		fmt.Fprintln(r.stdout, line)
+	}
+	if !plan.Actionable() {
+		fmt.Fprintln(r.stderr, "Nothing to trust — every recipient is already encryptable or owned.")
+		return 0
+	}
+	if !yes {
+		n := countLsign(plan)
+		prompt := fmt.Sprintf("Local-sign %d key(s)", n)
+		if full {
+			prompt += " and set ownertrust=full"
+		}
+		prompt += "? [y/N] "
+		if !confirm(os.Stdin, r.stderr, prompt) {
+			fmt.Fprintln(r.stderr, "Cancelled.")
+			return 0
+		}
+	}
+	report, err := tr.Apply(ctx, plan, strength, false)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	for _, line := range trustApplyLines(report) {
+		fmt.Fprintln(r.stdout, line)
+	}
+	for _, res := range report.Results {
+		if res.Err != "" {
+			return 1
+		}
+	}
+	return 0
+}
+
+func countLsign(plan gpgtrust.Plan) int {
+	n := 0
+	for _, r := range plan.Recipients {
+		if r.Action == gpgtrust.ActionWouldLsign {
+			n++
+		}
+	}
+	return n
+}
+
+func trustPlanLines(plan gpgtrust.Plan) []string {
+	var lines []string
+	if plan.GPGIDPath != "" {
+		lines = append(lines, "scope: "+defaultString(plan.Scope, "(root)"), ".gpg-id: "+plan.GPGIDPath)
+	} else {
+		lines = append(lines, "import dir: "+plan.Scope)
+	}
+	lines = append(lines, "strength: "+plan.Strength, "", "plan:")
+	for _, r := range plan.Recipients {
+		label := defaultString(r.UID, r.Token)
+		fp := shortFingerprint(r.Fingerprint)
+		action := string(r.Action)
+		if r.WillImport {
+			action = "would-import + would-lsign"
+		}
+		if fp != "" {
+			lines = append(lines, fmt.Sprintf("  %s  %s  %s", label, fp, action))
+		} else {
+			lines = append(lines, fmt.Sprintf("  %s  %s", label, action))
+		}
+	}
+	return lines
+}
+
+func trustApplyLines(report gpgtrust.ApplyReport) []string {
+	var lines []string
+	if len(report.Imported) > 0 {
+		lines = append(lines, fmt.Sprintf("imported %d key file(s)", len(report.Imported)))
+	}
+	signed := 0
+	for _, res := range report.Results {
+		if res.Signed {
+			signed++
+			lines = append(lines, "  local-signed "+shortFingerprint(res.Fingerprint))
+		} else if res.Err != "" {
+			lines = append(lines, "  FAILED "+shortFingerprint(res.Fingerprint)+": "+res.Err)
+		}
+	}
+	if len(report.OwnerTrustApplied) > 0 {
+		lines = append(lines, fmt.Sprintf("set ownertrust=full on %d key(s)", len(report.OwnerTrustApplied)))
+	}
+	summary := fmt.Sprintf("Local-signed %d key(s).", signed)
+	if report.Scope != "" || report.NowWritable {
+		if report.NowWritable {
+			summary += " Scope is now writable."
+		} else {
+			summary += " Scope is still not writable."
+		}
+	}
+	lines = append(lines, summary)
+	return lines
+}
+
+func shortFingerprint(fp string) string {
+	if len(fp) <= 16 {
+		return fp
+	}
+	return fp[len(fp)-16:]
+}
+
+// confirm reads a single y/N answer. A non-y answer (including EOF) declines.
+func confirm(in io.Reader, out io.Writer, prompt string) bool {
+	fmt.Fprint(out, prompt)
+	reader := bufio.NewReader(in)
+	line, _ := reader.ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
 }
 
 func (r runner) runKeys(args []string) int {

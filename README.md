@@ -26,6 +26,9 @@ the same `entry/mfa` convention used by the old script.
 - `doctor` checks for `pass`, `gpg`, clipboard tools, and `.gpg-id` recipient health.
 - `access` reports, per `.gpg-id` scope, whether you can write (encrypt to every
   recipient) or are effectively read-only — decided by a real probe-encrypt.
+- `trust` makes a read-only scope writable by local-signing its recipients (a
+  Go-native port of bash-zoo's `gpgobble`); `--import-dir` trusts a whole folder
+  of public keys.
 - GoReleaser archives, Linux packages, and Homebrew cask publishing.
 
 ## Install

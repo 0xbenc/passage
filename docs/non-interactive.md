@@ -126,6 +126,31 @@ with `label`, `scope`, `gpg_id_path`, `verdict`, `recipient_count`, the
 recipient buckets (`owned`, `encryptable`, `invalid`, `unusable`, `missing`),
 and `fixable`.
 
+### trust
+
+```sh
+passage trust [SCOPE] [--full] [--yes] [--json] [--store-dir PATH]
+passage trust --import-dir DIR [--full] [--yes] [--json] [--store-dir PATH]
+```
+
+Makes a read-only scope writable by local-signing the recipients gpg cannot yet
+encrypt to (the Go-native port of bash-zoo's `gpgobble`). `SCOPE` is an entry
+path or folder; its nearest `.gpg-id` governs. Default strength is **local-sign
+only** — exactly the validity pass needs — while `--full` additionally raises
+ownertrust to full (4), never downgrading an existing 4/5.
+
+- `--import-dir DIR` imports every public-key file in `DIR` and trusts them all
+  (gpgobble parity), instead of a store scope's recipients.
+- `--yes` applies without the interactive confirmation.
+- `--json` prints the dry-run **plan only** (`schema_version`, `scope`,
+  `gpg_id_path`, `strength`, `recipients[]` with `token`/`fingerprint`/`action`)
+  and never mutates the keyring.
+
+Local-signing uses your own secret key, so a passphrase prompt (pinentry) may
+appear. It is idempotent: re-running re-signs nothing and never downgrades
+trust. After applying, run `passage access SCOPE` to confirm the scope flipped
+to `writable`.
+
 ### keys
 
 ```sh

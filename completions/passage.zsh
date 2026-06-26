@@ -16,6 +16,7 @@ _passage() {
     'clear-clipboard:Clear the clipboard'
     'doctor:Run health checks'
     'access:Report write access per .gpg-id scope'
+    'trust:Local-sign recipients to make a scope writable'
     'keys:List local GPG keys'
     'theme:Open the theme builder'
     'version:Print version'
@@ -52,6 +53,9 @@ _passage() {
           ;;
         mfa)
           _arguments $common
+          ;;
+        trust)
+          _arguments '--full[Also set ownertrust full]' '--import-dir[Import+trust a key folder]:dir:_files -/' '--yes[Skip confirmation]' $common
           ;;
         help)
           _describe 'topic' commands

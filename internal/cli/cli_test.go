@@ -226,7 +226,7 @@ case "$mode" in
   listkeys)
     if [ -n "$listid" ]; then
       if contains "$listid" "$GPG_FAKE_PRESENT" || contains "$listid" "$GPG_FAKE_SECRET"; then
-        printf 'pub:-:\nfpr:::::::::%s:\nuid:-:::::::::%s:\n' "$listid" "$listid"; exit 0
+        printf 'pub:-:::::::::::::\nfpr:::::::::%s:\nuid:-:::::::::%s:\n' "$listid" "$listid"; exit 0
       fi
       exit 2
     fi ;;
@@ -294,6 +294,48 @@ func TestRunAccessSingleEntryWritable(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "writable") {
 		t.Fatalf("output missing writable verdict:\n%s", stdout.String())
+	}
+}
+
+func TestRunTrustPlanJSON(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, filepath.Join(root, "work"), "owner", "carol")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	t.Setenv("PATH", bin)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner carol")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	// --json prints the plan only and must never mutate, so no confirm is needed.
+	code := Run([]string{"trust", "work", "--json", "--store-dir", root}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run trust --json = %d; stderr=%s", code, stderr.String())
+	}
+	var got struct {
+		SchemaVersion int    `json:"schema_version"`
+		Strength      string `json:"strength"`
+		Recipients    []struct {
+			Token  string `json:"token"`
+			Action string `json:"action"`
+		} `json:"recipients"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if got.SchemaVersion != 1 || got.Strength != "lsign-only" {
+		t.Fatalf("schema/strength = %d/%q", got.SchemaVersion, got.Strength)
+	}
+	actions := map[string]string{}
+	for _, r := range got.Recipients {
+		actions[r.Token] = r.Action
+	}
+	if actions["owner"] != "owned-skip" {
+		t.Errorf("owner = %q, want owned-skip", actions["owner"])
+	}
+	if actions["carol"] != "would-lsign" {
+		t.Errorf("carol = %q, want would-lsign", actions["carol"])
 	}
 }
 
