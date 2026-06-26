@@ -151,6 +151,12 @@ Trust the selected entry's folder — local-sign recipients to make it writable.
 Import keys: browse to a folder of public-key files and import + local-sign them
 all (gpgobble parity).
 .TP
+.B S
+Import secret key(s): browse to a folder or a single key file and import your
+secret key(s), setting them to ultimate ownertrust (the fix for a new machine,
+where gpg does not auto-trust imported keys). Public-only keys are imported but
+left untrusted.
+.TP
 .B Ctrl-Y
 Copy password; in MFA-only mode, show/copy TOTP.
 .TP

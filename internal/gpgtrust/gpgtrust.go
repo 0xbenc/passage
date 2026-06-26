@@ -216,6 +216,94 @@ func (t Truster) PlanImportDir(ctx context.Context, dir string, strength Strengt
 type peekedKey struct {
 	Fingerprint string
 	UID         string
+	HasSecret   bool // the peeked file carried secret-key material for this key
+}
+
+// SecretImportKey previews one key found in the chosen files.
+type SecretImportKey struct {
+	Fingerprint string `json:"fingerprint"`
+	UID         string `json:"uid,omitempty"`
+	HasSecret   bool   `json:"has_secret"`
+}
+
+// SecretImportPlan previews a secret-key import; building it imports nothing.
+type SecretImportPlan struct {
+	SchemaVersion int               `json:"schema_version"`
+	Files         []string          `json:"files"`
+	Keys          []SecretImportKey `json:"keys"`
+}
+
+// OwnKeyCount returns how many keys the files carry the secret for (the ones
+// this flow will set up as yours).
+func (p SecretImportPlan) OwnKeyCount() int {
+	n := 0
+	for _, k := range p.Keys {
+		if k.HasSecret {
+			n++
+		}
+	}
+	return n
+}
+
+type SecretImportReport struct {
+	SchemaVersion int      `json:"schema_version"`
+	Imported      []string `json:"imported,omitempty"`    // files imported
+	Trusted       []string `json:"trusted,omitempty"`     // fingerprints set ultimate
+	PublicOnly    []string `json:"public_only,omitempty"` // public-only keys imported but not trusted
+}
+
+// PlanImportSecrets peeks the chosen key files (show-only, no mutation) so the
+// caller can show which carry secret-key material before importing.
+func (t Truster) PlanImportSecrets(ctx context.Context, files []string) (SecretImportPlan, error) {
+	if len(files) == 0 {
+		return SecretImportPlan{}, fmt.Errorf("no key files selected")
+	}
+	plan := SecretImportPlan{SchemaVersion: 1, Files: files}
+	seen := map[string]bool{}
+	for _, f := range files {
+		for _, k := range t.peekFile(ctx, f) {
+			if k.Fingerprint == "" || seen[k.Fingerprint] {
+				continue
+			}
+			seen[k.Fingerprint] = true
+			plan.Keys = append(plan.Keys, SecretImportKey{Fingerprint: k.Fingerprint, UID: k.UID, HasSecret: k.HasSecret})
+		}
+	}
+	return plan, nil
+}
+
+// ApplyImportSecrets imports the files and sets ultimate trust on every key you
+// now hold the secret for but that isn't a valid encryption target yet — making
+// your own keys properly yours on a new machine. Public-only keys are imported
+// but left untrusted (trust those via the public-key import / trust flow).
+func (t Truster) ApplyImportSecrets(ctx context.Context, plan SecretImportPlan) (SecretImportReport, error) {
+	report := SecretImportReport{SchemaVersion: 1}
+	for _, f := range plan.Files {
+		if err := t.importFile(ctx, f); err == nil {
+			report.Imported = append(report.Imported, f)
+		}
+	}
+	d := t.diag()
+	var targets []trustTarget
+	for _, k := range plan.Keys {
+		if !k.HasSecret {
+			report.PublicOnly = append(report.PublicOnly, k.Fingerprint)
+			continue
+		}
+		// Imported as yours: ultimate-trust it if it's owned now and not already
+		// a valid target (and not expired/revoked).
+		if d.HasSecret(ctx, k.Fingerprint) && !d.CanEncryptTo(ctx, k.Fingerprint) && !d.Unusable(ctx, k.Fingerprint) {
+			targets = append(targets, trustTarget{fp: k.Fingerprint, level: 6})
+		}
+	}
+	if len(targets) > 0 {
+		applied, err := t.applyOwnerTrust(ctx, targets)
+		if err != nil {
+			return report, err
+		}
+		report.Trusted = applied
+	}
+	return report, nil
 }
 
 func (t Truster) planImportedKey(ctx context.Context, d gpgdiag.Checker, key peekedKey) RecipientPlan {
@@ -402,23 +490,23 @@ func (t Truster) peekFile(ctx context.Context, file string) []peekedKey {
 	}
 	var keys []peekedKey
 	var cur *peekedKey
-	pubPending := false
+	fprPending := false
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Split(line, ":")
 		if len(fields) < 10 {
 			continue
 		}
 		switch fields[0] {
-		case "pub":
+		case "pub", "sec": // a primary key block — sec means the file holds the secret
 			if cur != nil && cur.Fingerprint != "" {
 				keys = append(keys, *cur)
 			}
-			cur = &peekedKey{}
-			pubPending = true
+			cur = &peekedKey{HasSecret: fields[0] == "sec"}
+			fprPending = true
 		case "fpr":
-			if cur != nil && pubPending {
+			if cur != nil && fprPending {
 				cur.Fingerprint = fields[9]
-				pubPending = false
+				fprPending = false
 			}
 		case "uid":
 			if cur != nil && cur.UID == "" {

@@ -102,6 +102,80 @@ func TestPlanRecipientsClassification(t *testing.T) {
 	}
 }
 
+// TestRealGPGImportSecrets covers the secret-import flow: importing a secret key
+// file makes the key yours and ultimate-trusted, while a public-only file is
+// imported but left untrusted.
+func TestRealGPGImportSecrets(t *testing.T) {
+	gpgBin, err := exec.LookPath("gpg")
+	if err != nil {
+		t.Skip("gpg not installed")
+	}
+	mint := func(uid string) (secFile, pubFile, fpr string) {
+		h := t.TempDir()
+		_ = os.Chmod(h, 0o700)
+		if out, err := exec.Command(gpgBin, "--homedir", h, "--batch", "--pinentry-mode", "loopback",
+			"--passphrase", "", "--quick-generate-key", uid, "default", "default", "0").CombinedOutput(); err != nil {
+			t.Fatalf("generate %s: %v: %s", uid, err, out)
+		}
+		dir := t.TempDir()
+		secFile = filepath.Join(dir, "sec.asc")
+		pubFile = filepath.Join(dir, "pub.asc")
+		exec.Command(gpgBin, "--homedir", h, "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+			"--output", secFile, "--export-secret-keys", uid).Run()
+		exec.Command(gpgBin, "--homedir", h, "--output", pubFile, "--export", uid).Run()
+		out, _ := exec.Command(gpgBin, "--homedir", h, "--with-colons", "--list-keys", uid).Output()
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "fpr:") {
+				fpr = strings.Split(line, ":")[9]
+				break
+			}
+		}
+		return
+	}
+
+	home := t.TempDir()
+	_ = os.Chmod(home, 0o700)
+	t.Setenv("GNUPGHOME", home)
+	mySec, _, myFpr := mint("Me <me@dev>")
+	_, theirPub, theirFpr := mint("Them <them@corp>")
+
+	tr := Truster{GPGBinary: gpgBin, StoreRoot: t.TempDir()}
+
+	// Preview distinguishes secret from public.
+	plan, err := tr.PlanImportSecrets(context.Background(), []string{mySec, theirPub})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	secret := map[string]bool{}
+	for _, k := range plan.Keys {
+		secret[k.Fingerprint] = k.HasSecret
+	}
+	if !secret[myFpr] {
+		t.Fatalf("my key not detected as secret: %#v", plan.Keys)
+	}
+	if secret[theirFpr] {
+		t.Fatalf("their public key wrongly flagged as secret")
+	}
+	if plan.OwnKeyCount() != 1 {
+		t.Fatalf("OwnKeyCount = %d, want 1", plan.OwnKeyCount())
+	}
+
+	report, err := tr.ApplyImportSecrets(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(report.Trusted) != 1 || report.Trusted[0] != myFpr {
+		t.Fatalf("Trusted = %#v, want [%s]", report.Trusted, myFpr)
+	}
+	trust, _ := exec.Command(gpgBin, "--homedir", home, "--export-ownertrust").Output()
+	if !strings.Contains(string(trust), myFpr+":6:") {
+		t.Fatalf("my key not ultimate-trusted:\n%s", trust)
+	}
+	if strings.Contains(string(trust), theirFpr) {
+		t.Fatalf("their public-only key was trusted; should be left untrusted:\n%s", trust)
+	}
+}
+
 // TestRealGPGOwnKeyGetsUltimateTrust covers the new-machine case: a secret key
 // imported (not generated) is NOT auto-trusted, so the store reads read-only;
 // `passage trust` must set it ultimate (6) — not local-sign it — and never

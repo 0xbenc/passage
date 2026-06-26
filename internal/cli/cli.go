@@ -431,6 +431,8 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 			message, messageErr = r.gapTrust(ctx, &rt, result.Entry)
 		case ui.ActionImport:
 			message, messageErr = r.gapImport(ctx, &rt, flags)
+		case ui.ActionImportSecret:
+			message, messageErr = r.gapImportSecret(ctx, &rt, flags)
 		default:
 			return 0
 		}
@@ -560,6 +562,110 @@ func (r runner) gapImportTrust(ctx context.Context, rt *runtimeState, dir string
 		}
 	}
 	return fmt.Sprintf("Imported %d key file(s); local-signed %d key(s).", len(report.Imported), signed), false
+}
+
+// gapImportSecret browses to a folder or a single key file and imports your
+// secret key(s), setting ultimate trust on the ones you now hold the secret for
+// (public-only keys are imported but left untrusted — use the public-key import
+// to trust those).
+func (r runner) gapImportSecret(ctx context.Context, rt *runtimeState, flags commonFlags) (string, bool) {
+	cwd := importBrowseStart(r.env)
+	for {
+		chosen, ok, err := ui.BrowseDir(ctx, ui.DirBrowseOptions{
+			Output:      r.stderr,
+			NoColor:     flags.noColor,
+			ThemeFile:   flags.themeFile,
+			NoAltScreen: flags.noAltScreen,
+			Title:       "import secret keys · choose a folder or a file",
+			Location:    cwd,
+			Entries:     dirBrowseEntries(cwd),
+			SelectFiles: true,
+		})
+		if err != nil {
+			return "Import: " + err.Error(), true
+		}
+		if !ok {
+			return "Import cancelled.", false
+		}
+		switch chosen.Kind {
+		case "use":
+			files := keyFilesInDir(cwd)
+			if len(files) == 0 {
+				cwd = chosen.Path
+				continue
+			}
+			return r.applyImportSecret(ctx, rt, files)
+		case "file":
+			return r.applyImportSecret(ctx, rt, []string{chosen.Path})
+		default: // "up" or "dir"
+			cwd = chosen.Path
+		}
+	}
+}
+
+func (r runner) applyImportSecret(ctx context.Context, rt *runtimeState, files []string) (string, bool) {
+	passstore.SetupGPGTTY(ctx, r.env)
+	tr := gpgtrust.New(rt.storeDir)
+	tr.Stdin = os.Stdin
+	tr.Stdout = os.Stderr
+	tr.Stderr = os.Stderr
+	plan, err := tr.PlanImportSecrets(ctx, files)
+	if err != nil {
+		return "Import: " + err.Error(), true
+	}
+	if len(plan.Keys) == 0 {
+		return "No GPG keys found in the selection.", true
+	}
+	if plan.OwnKeyCount() == 0 {
+		return "No secret keys in the selection — use I to import public keys.", true
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, line := range secretImportPlanLines(plan) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Import and ultimate-trust %d of your key(s)? [y/N] ", plan.OwnKeyCount())) {
+		return "Import cancelled.", false
+	}
+	report, err := tr.ApplyImportSecrets(ctx, plan)
+	if err != nil {
+		return "Import failed: " + err.Error(), true
+	}
+	msg := fmt.Sprintf("Imported %d file(s); set up %d of your key(s).", len(report.Imported), len(report.Trusted))
+	if len(report.PublicOnly) > 0 {
+		msg += fmt.Sprintf(" (%d public-only key(s) imported, not trusted.)", len(report.PublicOnly))
+	}
+	return msg, false
+}
+
+func secretImportPlanLines(plan gpgtrust.SecretImportPlan) []string {
+	lines := []string{"keys found:"}
+	for _, k := range plan.Keys {
+		kind := "public key (imported, not trusted)"
+		if k.HasSecret {
+			kind = "secret key → yours (ultimate trust)"
+		}
+		label := defaultString(k.UID, k.Fingerprint)
+		lines = append(lines, fmt.Sprintf("  %s  %s  %s", label, shortFingerprint(k.Fingerprint), kind))
+	}
+	return lines
+}
+
+// keyFilesInDir lists the importable key files directly in dir (non-recursive,
+// skipping dotfiles), for the "use this folder" choice.
+func keyFilesInDir(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, e.Name()))
+	}
+	sort.Strings(files)
+	return files
 }
 
 // importBrowseStart picks the directory the key browser opens in: $PWD, else home.

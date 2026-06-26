@@ -35,6 +35,9 @@ type DirBrowseOptions struct {
 	Title       string
 	Location    string
 	Entries     []DirEntry
+	// SelectFiles makes file rows selectable too (Enter returns the file),
+	// instead of reference-only. Used by the secret-key import.
+	SelectFiles bool
 }
 
 // BrowseDir shows one directory's contents and returns the chosen entry. It is
@@ -56,6 +59,7 @@ func BrowseDir(ctx context.Context, opts DirBrowseOptions) (DirEntry, bool, erro
 		title:       defaultString(opts.Title, "choose a folder"),
 		location:    opts.Location,
 		noAltScreen: opts.NoAltScreen,
+		selectFiles: opts.SelectFiles,
 		width:       90,
 		height:      26,
 	}
@@ -90,6 +94,7 @@ type dirBrowseModel struct {
 	title       string
 	location    string
 	noAltScreen bool
+	selectFiles bool
 	width       int
 	height      int
 }
@@ -160,10 +165,14 @@ func (m dirBrowseModel) View() tea.View {
 	theme := pickerTheme{theme: m.theme}
 	body := []string{m.locationLine(width-4, theme), m.filterLine(width-4, theme), ""}
 	body = append(body, m.listLines(width-4, theme)...)
+	footer := "enter open/use folder   files shown for reference   type filter   esc cancel"
+	if m.selectFiles {
+		footer = "enter open folder / use folder / select file   type filter   esc cancel"
+	}
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
 		Title:  strings.ToUpper(m.title),
 		Body:   body,
-		Footer: "enter open/use folder   files shown for reference   type filter   esc cancel",
+		Footer: footer,
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view
@@ -212,7 +221,7 @@ func (m dirBrowseModel) listLines(width int, theme pickerTheme) []string {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more above", start)))
 	}
 	for i := start; i < end; i++ {
-		lines = append(lines, dirBrowseRow(m.entries[m.filtered[i]], i == m.cursor, width, theme))
+		lines = append(lines, dirBrowseRow(m.entries[m.filtered[i]], i == m.cursor, m.selectFiles, width, theme))
 	}
 	if end < len(m.filtered) {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more below", len(m.filtered)-end)))
@@ -220,7 +229,7 @@ func (m dirBrowseModel) listLines(width int, theme pickerTheme) []string {
 	return lines
 }
 
-func dirBrowseRow(entry DirEntry, selected bool, width int, theme pickerTheme) string {
+func dirBrowseRow(entry DirEntry, selected, filesSelectable bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
 		cursor = "> "
@@ -234,6 +243,9 @@ func dirBrowseRow(entry DirEntry, selected bool, width int, theme pickerTheme) s
 	case entry.Kind == "use":
 		return theme.accent(line)
 	case entry.Kind == "file":
+		if filesSelectable {
+			return theme.primary(line)
+		}
 		return theme.subtle(line) // reference-only, dimmed
 	case entry.Kind == "up":
 		return theme.muted(line)
@@ -253,7 +265,11 @@ func (m dirBrowseModel) isSelectable(filteredIdx int) bool {
 	if filteredIdx < 0 || filteredIdx >= len(m.filtered) {
 		return false
 	}
-	return dirEntrySelectable(m.entries[m.filtered[filteredIdx]].Kind)
+	kind := m.entries[m.filtered[filteredIdx]].Kind
+	if kind == "file" {
+		return m.selectFiles
+	}
+	return dirEntrySelectable(kind)
 }
 
 // snap returns a selectable filtered index for the cursor: it searches from idx

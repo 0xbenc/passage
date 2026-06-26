@@ -79,6 +79,32 @@ func TestDirBrowseCursorSkipsFiles(t *testing.T) {
 	}
 }
 
+func TestDirBrowseSelectFilesMode(t *testing.T) {
+	m := dirBrowseModel{
+		entries: []DirEntry{
+			{Title: "Use this folder", Path: "/k", Kind: "use"},
+			{Title: "me.sec.asc", Path: "/k/me.sec.asc", Kind: "file"},
+		},
+		selected:    -1,
+		selectFiles: true,
+		theme:       termstyle.TerminalTheme(),
+		width:       80,
+		height:      24,
+	}
+	m.applyFilter()
+	// With SelectFiles, the cursor can land on the file and Enter selects it.
+	down, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "\x1b[B"}))
+	m = down.(dirBrowseModel)
+	if got := m.entries[m.filtered[m.cursor]]; got.Kind != "file" {
+		t.Fatalf("cursor did not reach the file row (kind %s)", got.Kind)
+	}
+	en, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	got := en.(dirBrowseModel)
+	if got.selected < 0 || got.entries[got.filtered[got.selected]].Path != "/k/me.sec.asc" {
+		t.Fatalf("Enter did not select the file: selected=%d", got.selected)
+	}
+}
+
 func TestDirBrowseCancel(t *testing.T) {
 	m := newDirBrowse([]DirEntry{{Title: "Use this folder", Kind: "use"}})
 	u, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
