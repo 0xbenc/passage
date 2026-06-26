@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/0xbenc/passage/internal/gpgdiag"
@@ -45,11 +46,12 @@ func (s Strength) String() string {
 type Action string
 
 const (
-	ActionWouldLsign   Action = "would-lsign"   // present (or to-be-imported) but not encryptable
-	ActionAlreadyValid Action = "already-valid" // already encryptable; nothing to do
-	ActionOwnedSkip    Action = "owned-skip"    // you hold the secret key
-	ActionMissing      Action = "missing"       // not in keyring and no import source
-	ActionUnusable     Action = "unusable"      // expired/revoked/disabled — lsign cannot help
+	ActionWouldLsign    Action = "would-lsign"     // present (or to-be-imported) but not encryptable
+	ActionWouldOwnTrust Action = "would-own-trust" // your own key (secret held) but untrusted — set ultimate
+	ActionAlreadyValid  Action = "already-valid"   // already encryptable; nothing to do
+	ActionOwnedSkip     Action = "owned-skip"      // you hold the secret key and it's already valid
+	ActionMissing       Action = "missing"         // not in keyring and no import source
+	ActionUnusable      Action = "unusable"        // expired/revoked/disabled — neither lsign nor trust helps
 )
 
 type RecipientPlan struct {
@@ -73,7 +75,7 @@ type Plan struct {
 // Actionable reports whether Apply would change anything.
 func (p Plan) Actionable() bool {
 	for _, r := range p.Recipients {
-		if r.Action == ActionWouldLsign {
+		if r.Action == ActionWouldLsign || r.Action == ActionWouldOwnTrust {
 			return true
 		}
 	}
@@ -154,21 +156,33 @@ func (t Truster) planToken(ctx context.Context, d gpgdiag.Checker, token string)
 	fpr, uid, present := d.ResolvePrimary(ctx, token)
 	rp.Fingerprint = fpr
 	rp.UID = uid
+	// A key you hold the secret for is provably yours. If it isn't a valid
+	// encryption target yet (and isn't expired/revoked), the fix is ultimate
+	// trust — never a local-signature (you don't lsign your own key).
+	if d.HasSecret(ctx, token) {
+		switch {
+		case d.CanEncryptTo(ctx, token):
+			rp.Action = ActionOwnedSkip
+		case d.Unusable(ctx, token):
+			rp.Action = ActionUnusable
+		default:
+			rp.Action = ActionWouldOwnTrust
+		}
+		return rp
+	}
+	if !present {
+		rp.Action = ActionMissing
+		return rp
+	}
 	switch d.RecipientStatus(ctx, token) {
-	case gpgdiag.RecipientOwned:
-		rp.Action = ActionOwnedSkip
 	case gpgdiag.RecipientEncryptable:
 		rp.Action = ActionAlreadyValid
 	case gpgdiag.RecipientUnusable:
 		rp.Action = ActionUnusable
 	case gpgdiag.RecipientMissing:
 		rp.Action = ActionMissing
-	default: // invalid → fixable by local-sign
-		if present {
-			rp.Action = ActionWouldLsign
-		} else {
-			rp.Action = ActionMissing
-		}
+	default: // present but invalid → fixable by local-sign
+		rp.Action = ActionWouldLsign
 	}
 	return rp
 }
@@ -232,7 +246,7 @@ func (t Truster) Apply(ctx context.Context, plan Plan, strength Strength, dryRun
 	report := ApplyReport{SchemaVersion: 1, Scope: plan.Scope, DryRun: dryRun}
 	if dryRun {
 		for _, r := range plan.Recipients {
-			if r.Action == ActionWouldLsign {
+			if r.Action == ActionWouldLsign || r.Action == ActionWouldOwnTrust {
 				report.Results = append(report.Results, ApplyResult{Fingerprint: r.Fingerprint, UID: r.UID})
 			}
 		}
@@ -264,9 +278,23 @@ func (t Truster) Apply(ctx context.Context, plan Plan, strength Strength, dryRun
 		report.Results = append(report.Results, res)
 	}
 
-	// 3) Optionally raise ownertrust to full (5), never downgrading 5/6.
-	if strength == Full && len(toFull) > 0 {
-		applied, err := t.applyOwnerTrust(ctx, toFull)
+	// 3) Ownertrust changes, never downgraded. Your own untrusted keys get
+	// ultimate (6) always — that's the fix for them; with --full, the foreign
+	// keys we just local-signed additionally get full (5).
+	var targets []trustTarget
+	for _, r := range plan.Recipients {
+		if r.Action == ActionWouldOwnTrust && r.Fingerprint != "" {
+			targets = append(targets, trustTarget{fp: r.Fingerprint, level: 6})
+			report.Results = append(report.Results, ApplyResult{Fingerprint: r.Fingerprint, UID: r.UID})
+		}
+	}
+	if strength == Full {
+		for _, res := range toFull {
+			targets = append(targets, trustTarget{fp: res.Fingerprint, level: 5})
+		}
+	}
+	if len(targets) > 0 {
+		applied, err := t.applyOwnerTrust(ctx, targets)
 		if err != nil {
 			return report, err
 		}
@@ -289,38 +317,55 @@ func (t Truster) Apply(ctx context.Context, plan Plan, strength Strength, dryRun
 	return report, nil
 }
 
-func (t Truster) applyOwnerTrust(ctx context.Context, results []ApplyResult) ([]string, error) {
+// trustTarget is a fingerprint and the ownertrust level to raise it to (gpg's
+// 4=marginal, 5=full, 6=ultimate).
+type trustTarget struct {
+	fp    string
+	level int
+}
+
+func (t Truster) applyOwnerTrust(ctx context.Context, targets []trustTarget) ([]string, error) {
 	trust, err := t.diag().OwnerTrust(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Dedup to the highest requested level per fingerprint.
+	want := map[string]int{}
+	for _, tg := range targets {
+		if tg.fp == "" {
+			continue
+		}
+		if tg.level > want[tg.fp] {
+			want[tg.fp] = tg.level
+		}
+	}
 	var lines []string
 	var applied []string
-	seen := map[string]bool{}
-	for _, r := range results {
-		fp := r.Fingerprint
-		if fp == "" || seen[fp] {
+	for fp, level := range want {
+		// Never downgrade: skip when the existing level already meets or exceeds
+		// the target.
+		if cur := ownerTrustLevel(trust[fp]); cur >= level {
 			continue
 		}
-		seen[fp] = true
-		// Never downgrade an existing full (5) or ultimate (6) trust. gpg's
-		// ownertrust values are 4=marginal, 5=full, 6=ultimate.
-		if lvl := trust[fp]; lvl == "5" || lvl == "6" {
-			continue
-		}
-		lines = append(lines, fp+":5:")
+		lines = append(lines, fmt.Sprintf("%s:%d:", fp, level))
 		applied = append(applied, fp)
 	}
 	if len(applied) == 0 {
 		return nil, nil
 	}
 	sort.Strings(lines)
+	sort.Strings(applied)
 	cmd := exec.CommandContext(ctx, t.gpg(), "--batch", "--yes", "--quiet", "--import-ownertrust")
 	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n") + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("import-ownertrust failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return applied, nil
+}
+
+func ownerTrustLevel(s string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	return n
 }
 
 // lsign local-signs a key. It is deliberately NOT run through a cancellation

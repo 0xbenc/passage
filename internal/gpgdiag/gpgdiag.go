@@ -260,11 +260,19 @@ func (c Checker) reportForRecipients(ctx context.Context, ids []string) ScopeRep
 	// Not writable: classify each recipient to surface the blockers and decide
 	// read-only (you own a secret key, so you can still decrypt) vs no-access.
 	owned := false
+	ownTrustFixable := false
 	for _, id := range ids {
 		switch c.recipientStatus(ctx, id) {
 		case RecipientOwned:
 			report.Owned = append(report.Owned, id)
 			owned = true
+			// A key you own that still isn't a valid encryption target — and
+			// isn't expired/revoked — is the new-machine case: your freshly
+			// imported secret key just needs ultimate trust, which `passage
+			// trust` can set because the secret proves it's yours.
+			if !c.canEncryptTo(ctx, id) && !c.Unusable(ctx, id) {
+				ownTrustFixable = true
+			}
 		case RecipientEncryptable:
 			report.Encryptable = append(report.Encryptable, id)
 		case RecipientInvalid:
@@ -283,6 +291,9 @@ func (c Checker) reportForRecipients(ctx context.Context, ids []string) ScopeRep
 		report.Status = "no access"
 	}
 	report.Fixable = fixHint(report)
+	if report.Fixable == "" && ownTrustFixable {
+		report.Fixable = "trust"
+	}
 	return report
 }
 
@@ -396,6 +407,16 @@ func (c Checker) ScopeWritable(ctx context.Context, ids []string) bool {
 // HasSecret reports whether a secret key is present for the selector.
 func (c Checker) HasSecret(ctx context.Context, id string) bool {
 	return c.hasSecret(ctx, id)
+}
+
+// Unusable reports whether the key's computed validity is terminal —
+// expired/revoked/invalid/disabled — so a caller knows trust can't rescue it.
+func (c Checker) Unusable(ctx context.Context, id string) bool {
+	out, err := c.runGPG(ctx, "--batch", "--with-colons", "--list-keys", id)
+	if err != nil {
+		return false
+	}
+	return keyUnusable(out)
 }
 
 // OwnerTrust returns the fingerprint→ownertrust-level map (diagnostic only; it

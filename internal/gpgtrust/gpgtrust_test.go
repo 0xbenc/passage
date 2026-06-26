@@ -102,6 +102,77 @@ func TestPlanRecipientsClassification(t *testing.T) {
 	}
 }
 
+// TestRealGPGOwnKeyGetsUltimateTrust covers the new-machine case: a secret key
+// imported (not generated) is NOT auto-trusted, so the store reads read-only;
+// `passage trust` must set it ultimate (6) — not local-sign it — and never
+// downgrade an existing ultimate.
+func TestRealGPGOwnKeyGetsUltimateTrust(t *testing.T) {
+	gpgBin, err := exec.LookPath("gpg")
+	if err != nil {
+		t.Skip("gpg not installed")
+	}
+	home := t.TempDir()
+	_ = os.Chmod(home, 0o700)
+	t.Setenv("GNUPGHOME", home)
+
+	// Mint a key elsewhere, export the SECRET, import it here (imported secrets
+	// are not auto-ultimate, unlike generated ones).
+	src := t.TempDir()
+	_ = os.Chmod(src, 0o700)
+	if out, err := exec.Command(gpgBin, "--homedir", src, "--batch", "--pinentry-mode", "loopback",
+		"--passphrase", "", "--quick-generate-key", "Me <me@new>", "default", "default", "0").CombinedOutput(); err != nil {
+		t.Fatalf("generate: %v: %s", err, out)
+	}
+	secFile := filepath.Join(t.TempDir(), "me.sec")
+	if out, err := exec.Command(gpgBin, "--homedir", src, "--batch", "--pinentry-mode", "loopback",
+		"--passphrase", "", "--output", secFile, "--export-secret-keys", "me@new").CombinedOutput(); err != nil {
+		t.Fatalf("export secret: %v: %s", err, out)
+	}
+	if out, err := exec.Command(gpgBin, "--homedir", home, "--batch", "--pinentry-mode", "loopback",
+		"--passphrase", "", "--import", secFile).CombinedOutput(); err != nil {
+		t.Fatalf("import secret: %v: %s", err, out)
+	}
+	out, _ := exec.Command(gpgBin, "--homedir", home, "--with-colons", "--list-keys", "me@new").Output()
+	var ownFpr string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "fpr:") {
+			ownFpr = strings.Split(line, ":")[9]
+			break
+		}
+	}
+	if ownFpr == "" {
+		t.Fatal("no own fingerprint")
+	}
+
+	root := t.TempDir()
+	writeGPGID(t, filepath.Join(root, "me"), ownFpr)
+	tr := Truster{GPGBinary: gpgBin, StoreRoot: root}
+
+	plan, err := tr.PlanRecipients(context.Background(), "me", Lsign)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if got := actionOf(plan, ownFpr); got != ActionWouldOwnTrust {
+		t.Fatalf("own untrusted key action = %q, want would-own-trust", got)
+	}
+	report, err := tr.Apply(context.Background(), plan, Lsign, false)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !report.NowWritable {
+		t.Fatalf("scope not writable after own-trust: %#v", report)
+	}
+	trust, _ := exec.Command(gpgBin, "--homedir", home, "--export-ownertrust").Output()
+	if !strings.Contains(string(trust), ownFpr+":6:") {
+		t.Fatalf("own key not set to ultimate (6):\n%s", trust)
+	}
+	// Re-plan: now already valid, nothing to do.
+	plan2, _ := tr.PlanRecipients(context.Background(), "me", Lsign)
+	if got := actionOf(plan2, ownFpr); got != ActionOwnedSkip {
+		t.Fatalf("after trust, action = %q, want owned-skip", got)
+	}
+}
+
 // TestRealGPGApplyLsignAndNeverDowngrade exercises Apply against a real gpg in a
 // throwaway keyring: lsign flips a read-only scope writable; --full sets
 // ownertrust=4 on a fresh key but never downgrades an existing ultimate (5).

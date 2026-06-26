@@ -144,6 +144,31 @@ func TestVerdictClassification(t *testing.T) {
 	}
 }
 
+// TestOwnedUntrustedKeyReadsOnlyButTrustFixable models the new-machine case: you
+// hold the secret for the only recipient (your key) but it isn't a valid
+// encryption target yet — so the scope is read-only, and the fix is `passage
+// trust` (ultimate-trust your own key), not import or local-sign.
+func TestOwnedUntrustedKeyReadsOnlyButTrustFixable(t *testing.T) {
+	root := t.TempDir()
+	writeGPGID(t, root, "owner")
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "") // owner held but not yet a valid target
+	t.Setenv("GPG_FAKE_VALIDITY", "owner=-")
+
+	c := Checker{GPGBinary: fakeGPG(t), StoreRoot: root}
+	scope, err := c.Access(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("Access: %v", err)
+	}
+	if scope.Verdict != VerdictReadOnly {
+		t.Fatalf("verdict = %s, want read_only", scope.Verdict)
+	}
+	if scope.Fixable != "trust" {
+		t.Fatalf("fixable = %q, want trust", scope.Fixable)
+	}
+}
+
 func TestAccessNearestAncestor(t *testing.T) {
 	root := t.TempDir()
 	writeGPGID(t, root, "owner")

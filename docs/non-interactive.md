@@ -176,6 +176,12 @@ appear. It is idempotent: re-running re-signs nothing and never downgrades
 trust. After applying, run `passage access SCOPE` to confirm the scope flipped
 to `writable`.
 
+A recipient whose **secret key you hold** but that isn't a valid encryption
+target yet (the common "new machine, freshly imported secret key" case — gpg
+does not auto-trust imported keys) is set to **ultimate** ownertrust rather than
+local-signed: holding the secret proves it's yours. This is what makes your own
+store writable again on a new machine.
+
 ### keys
 
 ```sh

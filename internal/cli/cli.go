@@ -482,7 +482,7 @@ func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.
 	for _, line := range trustPlanLines(plan) {
 		fmt.Fprintln(os.Stderr, line)
 	}
-	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Local-sign %d key(s) to make %s writable? [y/N] ", countLsign(plan), defaultString(plan.Scope, "this folder"))) {
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Apply trust to %d key(s) to make %s writable? [y/N] ", countTrustActions(plan), defaultString(plan.Scope, "this folder"))) {
 		return "Trust cancelled.", false
 	}
 	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
@@ -546,7 +546,7 @@ func (r runner) gapImportTrust(ctx context.Context, rt *runtimeState, dir string
 	for _, line := range trustPlanLines(plan) {
 		fmt.Fprintln(os.Stderr, line)
 	}
-	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Import + local-sign %d key(s) from %s? [y/N] ", countLsign(plan), dir)) {
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Import + trust %d key(s) from %s? [y/N] ", countTrustActions(plan), dir)) {
 		return "Import cancelled.", false
 	}
 	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
@@ -1605,10 +1605,9 @@ func (r runner) runTrust(args []string) int {
 		return 0
 	}
 	if !yes {
-		n := countLsign(plan)
-		prompt := fmt.Sprintf("Local-sign %d key(s)", n)
+		prompt := fmt.Sprintf("Apply trust to %d key(s)", countTrustActions(plan))
 		if full {
-			prompt += " and set ownertrust=full"
+			prompt += " (with ownertrust=full)"
 		}
 		prompt += "? [y/N] "
 		if !confirm(os.Stdin, r.stderr, prompt) {
@@ -1632,14 +1631,37 @@ func (r runner) runTrust(args []string) int {
 	return 0
 }
 
-func countLsign(plan gpgtrust.Plan) int {
+// countTrustActions counts the recipients Apply would actually change.
+func countTrustActions(plan gpgtrust.Plan) int {
 	n := 0
 	for _, r := range plan.Recipients {
-		if r.Action == gpgtrust.ActionWouldLsign {
+		if r.Action == gpgtrust.ActionWouldLsign || r.Action == gpgtrust.ActionWouldOwnTrust {
 			n++
 		}
 	}
 	return n
+}
+
+func trustActionLabel(action gpgtrust.Action, willImport bool) string {
+	switch action {
+	case gpgtrust.ActionWouldLsign:
+		if willImport {
+			return "import + local-sign"
+		}
+		return "local-sign"
+	case gpgtrust.ActionWouldOwnTrust:
+		return "set ultimate trust (your key)"
+	case gpgtrust.ActionAlreadyValid:
+		return "already valid"
+	case gpgtrust.ActionOwnedSkip:
+		return "yours (skip)"
+	case gpgtrust.ActionUnusable:
+		return "expired/revoked — can't fix"
+	case gpgtrust.ActionMissing:
+		return "missing — import needed"
+	default:
+		return string(action)
+	}
 }
 
 func trustPlanLines(plan gpgtrust.Plan) []string {
@@ -1653,10 +1675,7 @@ func trustPlanLines(plan gpgtrust.Plan) []string {
 	for _, r := range plan.Recipients {
 		label := defaultString(r.UID, r.Token)
 		fp := shortFingerprint(r.Fingerprint)
-		action := string(r.Action)
-		if r.WillImport {
-			action = "would-import + would-lsign"
-		}
+		action := trustActionLabel(r.Action, r.WillImport)
 		if fp != "" {
 			lines = append(lines, fmt.Sprintf("  %s  %s  %s", label, fp, action))
 		} else {
@@ -1673,17 +1692,20 @@ func trustApplyLines(report gpgtrust.ApplyReport) []string {
 	}
 	signed := 0
 	for _, res := range report.Results {
-		if res.Signed {
+		switch {
+		case res.Err != "":
+			lines = append(lines, "  FAILED "+shortFingerprint(res.Fingerprint)+": "+res.Err)
+		case res.Signed:
 			signed++
 			lines = append(lines, "  local-signed "+shortFingerprint(res.Fingerprint))
-		} else if res.Err != "" {
-			lines = append(lines, "  FAILED "+shortFingerprint(res.Fingerprint)+": "+res.Err)
+		case res.TrustSet:
+			lines = append(lines, "  trusted "+shortFingerprint(res.Fingerprint))
 		}
 	}
 	if len(report.OwnerTrustApplied) > 0 {
-		lines = append(lines, fmt.Sprintf("set ownertrust=full on %d key(s)", len(report.OwnerTrustApplied)))
+		lines = append(lines, fmt.Sprintf("set ownertrust on %d key(s)", len(report.OwnerTrustApplied)))
 	}
-	summary := fmt.Sprintf("Local-signed %d key(s).", signed)
+	summary := fmt.Sprintf("Applied trust to %d key(s).", len(report.Results))
 	if report.Scope != "" || report.NowWritable {
 		if report.NowWritable {
 			summary += " Scope is now writable."
