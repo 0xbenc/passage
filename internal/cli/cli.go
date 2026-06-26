@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -428,6 +429,8 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 			message, messageErr = r.gapEdit(ctx, &rt, result.Entry)
 		case ui.ActionTrust:
 			message, messageErr = r.gapTrust(ctx, &rt, result.Entry)
+		case ui.ActionImport:
+			message, messageErr = r.gapImport(ctx, &rt, flags)
 		default:
 			return 0
 		}
@@ -496,6 +499,106 @@ func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.
 		return fmt.Sprintf("Trusted %d key(s); %s is now writable.", signed, defaultString(plan.Scope, "this folder")), false
 	}
 	return fmt.Sprintf("Local-signed %d key(s), but the folder is still not writable.", signed), true
+}
+
+// gapImport runs the directory browser (with the picker torn down) so the user
+// can choose a folder of public keys, then imports + local-signs them all. The
+// browser is re-run per directory as the user navigates, mirroring ssherpa's
+// transfer browser.
+func (r runner) gapImport(ctx context.Context, rt *runtimeState, flags commonFlags) (string, bool) {
+	cwd := importBrowseStart(r.env)
+	for {
+		chosen, ok, err := ui.BrowseDir(ctx, ui.DirBrowseOptions{
+			Output:      r.stderr,
+			NoColor:     flags.noColor,
+			ThemeFile:   flags.themeFile,
+			NoAltScreen: flags.noAltScreen,
+			Title:       "import keys · choose a folder",
+			Location:    cwd,
+			Entries:     dirBrowseEntries(cwd),
+		})
+		if err != nil {
+			return "Import: " + err.Error(), true
+		}
+		if !ok {
+			return "Import cancelled.", false
+		}
+		switch chosen.Kind {
+		case "use":
+			return r.gapImportTrust(ctx, rt, chosen.Path)
+		default: // "up" or "dir"
+			cwd = chosen.Path
+		}
+	}
+}
+
+func (r runner) gapImportTrust(ctx context.Context, rt *runtimeState, dir string) (string, bool) {
+	passstore.SetupGPGTTY(ctx, r.env)
+	tr := gpgtrust.New(rt.storeDir)
+	tr.Stdin = os.Stdin
+	tr.Stdout = os.Stderr
+	tr.Stderr = os.Stderr
+	plan, err := tr.PlanImportDir(ctx, dir, gpgtrust.Lsign)
+	if err != nil {
+		return "Import: " + err.Error(), true
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, line := range trustPlanLines(plan) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Import + local-sign %d key(s) from %s? [y/N] ", countLsign(plan), dir)) {
+		return "Import cancelled.", false
+	}
+	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
+	if err != nil {
+		return "Import failed: " + err.Error(), true
+	}
+	signed := 0
+	for _, res := range report.Results {
+		if res.Signed {
+			signed++
+		}
+	}
+	return fmt.Sprintf("Imported %d key file(s); local-signed %d key(s).", len(report.Imported), signed), false
+}
+
+// importBrowseStart picks the directory the key browser opens in: $PWD, else home.
+func importBrowseStart(env []string) string {
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		return cwd
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	return "."
+}
+
+// dirBrowseEntries lists a directory as browser rows: "use this folder", the
+// parent, then the subdirectories (sorted), mirroring ssherpa's listing.
+func dirBrowseEntries(dir string) []ui.DirEntry {
+	entries := []ui.DirEntry{{Title: "Use this folder", Path: dir, Kind: "use"}}
+	if parent := filepath.Dir(dir); parent != dir {
+		entries = append(entries, ui.DirEntry{Title: "..", Path: parent, Kind: "up"})
+	}
+	children, err := os.ReadDir(dir)
+	if err != nil {
+		return entries
+	}
+	var dirs []ui.DirEntry
+	for _, child := range children {
+		if !child.IsDir() || strings.HasPrefix(child.Name(), ".") {
+			continue
+		}
+		dirs = append(dirs, ui.DirEntry{
+			Title: child.Name() + "/",
+			Path:  filepath.Join(dir, child.Name()),
+			Kind:  "dir",
+		})
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Title) < strings.ToLower(dirs[j].Title)
+	})
+	return append(entries, dirs...)
 }
 
 // firstRunGuidance turns the most common first-run failure — no password store

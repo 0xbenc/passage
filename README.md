@@ -19,7 +19,8 @@ the same `entry/mfa` convention used by the old script.
   and `?` opens a grouped key reference.
 - In-picker create/generate/edit/delete and a "trust" action (shifted keys
   `N`/`G`/`E`/`D`/`T`), with an `RO` badge marking read-only folders. Lowercase
-  always filters, so the shifted keys never get in the way of typing.
+  always filters, so the shifted keys never get in the way of typing. `I` opens
+  a folder browser to import + trust a directory of public keys.
 - Password copy and reveal actions. Passwords are the first line of `pass show`.
 - Create, generate, edit, and remove entries (`insert`/`generate`/`edit`/`rm`),
   delegating to `pass` and refusing early when a folder is read-only.

@@ -427,6 +427,42 @@ func TestInteractiveNewRefusesOverwrite(t *testing.T) {
 	}
 }
 
+func TestDirBrowseEntriesListsSubdirs(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"work", "personal", ".hidden"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "key.asc"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries := dirBrowseEntries(root)
+	if entries[0].Kind != "use" || entries[1].Kind != "up" {
+		t.Fatalf("first rows = %q,%q, want use,up", entries[0].Kind, entries[1].Kind)
+	}
+	titles := map[string]bool{}
+	for _, e := range entries {
+		titles[e.Title] = true
+	}
+	if !titles["personal/"] || !titles["work/"] {
+		t.Fatalf("subdirs missing: %#v", titles)
+	}
+	if titles[".hidden/"] || titles["key.asc"] {
+		t.Fatalf("listed a hidden dir or a file: %#v", titles)
+	}
+	// directories are sorted (personal before work).
+	var dirOrder []string
+	for _, e := range entries {
+		if e.Kind == "dir" {
+			dirOrder = append(dirOrder, e.Title)
+		}
+	}
+	if len(dirOrder) != 2 || dirOrder[0] != "personal/" || dirOrder[1] != "work/" {
+		t.Fatalf("dir order = %#v, want [personal/ work/]", dirOrder)
+	}
+}
+
 func writeGPGIDFile(t *testing.T, dir string, ids ...string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {

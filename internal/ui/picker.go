@@ -32,6 +32,7 @@ const (
 	ActionEdit           Action = "edit"
 	ActionRemove         Action = "remove"
 	ActionTrust          Action = "trust"
+	ActionImport         Action = "import"
 	ActionQuit           Action = "quit"
 )
 
@@ -40,7 +41,7 @@ const (
 // terminal. The picker quits returning the request; the CLI runs it in the gap
 // and relaunches the picker (Pattern A).
 func isGapAction(action Action) bool {
-	return action == ActionEdit || action == ActionTrust
+	return action == ActionEdit || action == ActionTrust || action == ActionImport
 }
 
 // isWriteAction reports whether an action mutates the store (used to widen the
@@ -475,6 +476,8 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.trigger(ActionEdit)
 			case "T":
 				return m.trigger(ActionTrust)
+			case "I":
+				return m.trigger(ActionImport)
 			case "D":
 				if _, ok := m.selectedEntry(); ok {
 					return m.startConfirm(ActionRemove), nil
@@ -766,6 +769,7 @@ func helpLines(theme pickerTheme) []string {
 	b = append(b, row("E", "edit in $EDITOR"))
 	b = append(b, row("D", "delete (confirm)"))
 	b = append(b, row("T", "trust — make a read-only folder writable"))
+	b = append(b, row("I", "import + trust a folder of public keys"))
 	b = append(b, "", theme.accent("VIEW & MANAGE"))
 	b = append(b, row("^F", "toggle mfa-only"))
 	b = append(b, row("^O", "theme editor"))
@@ -1119,7 +1123,7 @@ func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
 	for _, ln := range wrapText("enter copy · ^R reveal · ^T totp · ^P pin", width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
-	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust", width) {
+	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust · I import keys", width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
 	return lines
