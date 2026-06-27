@@ -295,3 +295,22 @@ func (idx pathIndex) breadcrumbSegments(field string) (segs []breadcrumbSeg, lea
 func foldEqualRune(a, b rune) bool {
 	return a == b || unicode.ToLower(a) == unicode.ToLower(b)
 }
+
+// ascendPath drops the trailing path segment, for shift+tab: "pp/alter-ego/gm"
+// -> "pp/alter-ego/" -> "pp/" -> "". A trailing slash is removed first.
+func ascendPath(field string) string {
+	field = strings.TrimSuffix(field, "/")
+	if i := strings.LastIndex(field, "/"); i >= 0 {
+		return field[:i+1]
+	}
+	return ""
+}
+
+// displayDir names a dir (with trailing slash, as splitPath returns) for a
+// notice; the root reads as "the store root".
+func displayDir(dir string) string {
+	if folderKey(dir) == "" {
+		return "the store root"
+	}
+	return folderKey(dir)
+}

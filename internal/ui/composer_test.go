@@ -232,6 +232,126 @@ func TestComposerEmptyPathStaysOnStep(t *testing.T) {
 	}
 }
 
+// --- stepPath tab-completion behavior (uses fixturePaths from pathindex_test) ---
+
+// TestComposerPathTabOutWorkflow is the headline flow: p<TAB> a<TAB> gmail to
+// build pp/alter-ego/gmail, confirming the folders exist along the way.
+func TestComposerPathTabOutWorkflow(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "p")
+	c = c.update("tab", "") // unique folder pp -> descend
+	if c.path.String() != "pp/" {
+		t.Fatalf("after p<TAB> = %q, want pp/", c.path.String())
+	}
+	c = typeComposer(c, "a")
+	c = c.update("tab", "") // unique folder alter-ego -> descend
+	if c.path.String() != "pp/alter-ego/" {
+		t.Fatalf("after a<TAB> = %q, want pp/alter-ego/", c.path.String())
+	}
+	c = typeComposer(c, "gmail")
+	c = c.update("enter", "") // new leaf -> advance
+	if c.step != stepSecret || c.notice != "" {
+		t.Fatalf("new leaf should advance silently: step=%v notice=%q", c.step, c.notice)
+	}
+	if c.result().Path != "pp/alter-ego/gmail" {
+		t.Fatalf("result path = %q", c.result().Path)
+	}
+}
+
+func TestComposerPathTabCommonPrefixNoDescend(t *testing.T) {
+	c := newComposer(composePassword, []string{"app/azure-prod/x", "app/azure-dev/y"})
+	c = typeComposer(c, "app/a") // dir app/, frag a, matches azure-prod & azure-dev
+	c = c.update("tab", "")
+	if c.path.String() != "app/azure-" {
+		t.Fatalf("ambiguous tab = %q, want app/azure- (common prefix, no descend)", c.path.String())
+	}
+}
+
+func TestComposerPathTabFillsUniqueEntry(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "pp/backup/k") // unique entry "key"
+	c = c.update("tab", "")
+	if c.path.String() != "pp/backup/key" {
+		t.Fatalf("tab on unique entry = %q, want pp/backup/key", c.path.String())
+	}
+	c = c.update("enter", "") // it already exists -> blocked
+	if c.step != stepPath || !strings.Contains(c.notice, "exists") {
+		t.Fatalf("existing entry: step=%v notice=%q", c.step, c.notice)
+	}
+}
+
+func TestComposerPathTabNoMatchSetsNotice(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "zzz")
+	c = c.update("tab", "")
+	if c.path.String() != "zzz" {
+		t.Fatalf("no-match tab should not edit field: %q", c.path.String())
+	}
+	if !strings.Contains(c.notice, "new entry") {
+		t.Fatalf("no-match notice = %q", c.notice)
+	}
+}
+
+func TestComposerPathArrowSelectionAndEnterDescends(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = c.update("down", "") // select first root child (pp)
+	if c.selIndex != 0 {
+		t.Fatalf("down should select 0, got %d", c.selIndex)
+	}
+	c = c.update("up", "") // back to type mode
+	if c.selIndex != -1 {
+		t.Fatalf("up from 0 should return to -1, got %d", c.selIndex)
+	}
+	c = c.update("down", "")  // pp
+	c = c.update("enter", "") // selected folder -> descend, stay on path
+	if c.path.String() != "pp/" || c.step != stepPath || c.selIndex != -1 {
+		t.Fatalf("enter on selected folder: path=%q step=%v sel=%d", c.path.String(), c.step, c.selIndex)
+	}
+}
+
+func TestComposerPathEditResetsSelection(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = c.update("down", "") // select 0
+	c = typeComposer(c, "x") // any edit
+	if c.selIndex != -1 {
+		t.Fatalf("edit should reset selIndex, got %d", c.selIndex)
+	}
+}
+
+func TestComposerPathShiftTabAscends(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "pp/alter-ego/gm")
+	for _, want := range []string{"pp/alter-ego/", "pp/", ""} {
+		c = c.update("shift+tab", "")
+		if c.path.String() != want {
+			t.Fatalf("shift+tab = %q, want %q", c.path.String(), want)
+		}
+	}
+}
+
+func TestComposerPathEnterBlocksFolderAndTrailingSlash(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "pp") // an existing folder, no /name
+	c = c.update("enter", "")
+	if c.step != stepPath || !strings.Contains(c.notice, "folder") {
+		t.Fatalf("folder enter: step=%v notice=%q", c.step, c.notice)
+	}
+	c = typeComposer(c, "/") // now "pp/"
+	c = c.update("enter", "")
+	if c.step != stepPath || !strings.Contains(c.notice, "finish the name") {
+		t.Fatalf("trailing-slash enter: step=%v notice=%q", c.step, c.notice)
+	}
+}
+
+func TestComposerPathEnterBlocksCaseCollision(t *testing.T) {
+	c := newComposer(composePassword, []string{"Work/github"})
+	c = typeComposer(c, "work/github") // same entry, different case
+	c = c.update("enter", "")
+	if c.step != stepPath || !strings.Contains(c.notice, "case differs") {
+		t.Fatalf("case collision: step=%v notice=%q", c.step, c.notice)
+	}
+}
+
 func TestPickerRendersReadOnlyBadge(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "work/aws/db", Display: passstore.Display("work/aws/db")},

@@ -94,21 +94,7 @@ func (c composerModel) update(key, text string) composerModel {
 	}
 	switch c.step {
 	case stepPath:
-		switch key {
-		case "enter":
-			if strings.TrimSpace(c.path.String()) == "" {
-				return c
-			}
-			if c.mode == composeGenerate {
-				c.step = stepLength
-			} else {
-				c.step = stepSecret
-			}
-		case "ctrl+g":
-			c.mode = composeGenerate
-		default:
-			c.path = c.path.update(key, text)
-		}
+		return c.updatePath(key, text)
 	case stepSecret:
 		switch key {
 		case "enter":
@@ -158,6 +144,127 @@ func (c composerModel) update(key, text string) composerModel {
 			case "s":
 				c.noSymbols = !c.noSymbols
 			}
+		}
+	}
+	return c
+}
+
+// updatePath drives stepPath: shell-style TAB completion over the implicit
+// folder tree, arrow selection of the live candidate list, and enter-validation
+// against the path index. selIndex == -1 is plain type mode (no highlight); any
+// field edit returns to it and clears the notice so feedback is never stale.
+func (c composerModel) updatePath(key, text string) composerModel {
+	field := c.path.String()
+	dir, frag := splitPath(field)
+	switch key {
+	case "enter":
+		// A highlighted folder descends; anything else validates + submits.
+		if c.selIndex >= 0 {
+			cands := c.idx.completionCandidates(dir, frag)
+			if c.selIndex < len(cands) {
+				newField, descended := applyNode(dir, cands[c.selIndex].node)
+				c.path = c.path.withValue(newField)
+				c.selIndex = -1
+				c.notice = ""
+				if descended {
+					return c
+				}
+				field = newField // an entry was filled; validate it below
+			}
+		}
+		return c.submitPath(field)
+	case "tab":
+		return c.completePath(dir, frag)
+	case "shift+tab":
+		c.path = c.path.withValue(ascendPath(field))
+		c.selIndex = -1
+		c.notice = ""
+		return c
+	case "down":
+		if cands := c.idx.completionCandidates(dir, frag); c.selIndex < len(cands)-1 {
+			c.selIndex++
+		}
+		c.notice = ""
+		return c
+	case "up":
+		if c.selIndex >= 0 {
+			c.selIndex--
+		}
+		c.notice = ""
+		return c
+	case "ctrl+g":
+		// Switch to generate; stay on the path step (enter then goes to length).
+		c.mode = composeGenerate
+		c.notice = ""
+		return c
+	default:
+		// Field edit: printable text (incl. "/"), backspace, cursor motion, ^U.
+		c.path = c.path.update(key, text)
+		c.selIndex = -1
+		c.notice = ""
+		return c
+	}
+}
+
+// completePath implements shell first-TAB: accept a highlighted candidate, or
+// over the current fragment complete to a unique child, or extend to the
+// longest common prefix of the matches without guessing a descent.
+func (c composerModel) completePath(dir, frag string) composerModel {
+	cands := c.idx.completionCandidates(dir, frag)
+	if c.selIndex >= 0 && c.selIndex < len(cands) {
+		newField, _ := applyNode(dir, cands[c.selIndex].node)
+		c.path = c.path.withValue(newField)
+		c.selIndex = -1
+		c.notice = ""
+		return c
+	}
+	matches := matchingCandidates(cands)
+	switch len(matches) {
+	case 0:
+		if frag == "" {
+			c.notice = "no entries in " + displayDir(dir)
+		} else {
+			c.notice = "no match — " + strconv.Quote(frag) + " will be a new entry"
+		}
+	case 1:
+		newField, _ := applyNode(dir, matches[0].node)
+		c.path = c.path.withValue(newField)
+		c.notice = ""
+	default:
+		// Extend to the common prefix only when it makes progress; the live
+		// list already shows every match for the next keystroke.
+		if prefix := commonCompletionPrefix(matches); len([]rune(prefix)) > len([]rune(frag)) {
+			c.path = c.path.withValue(dir + prefix)
+		}
+		c.notice = ""
+	}
+	c.selIndex = -1
+	return c
+}
+
+// submitPath validates the typed path and either advances to the next step or
+// sets a notice explaining why it cannot. It mirrors the CLI's exact-match
+// overwrite gate, surfacing a duplicate before any round-trip.
+func (c composerModel) submitPath(field string) composerModel {
+	switch c.idx.classifyLeaf(field) {
+	case leafEmpty:
+		return c // historical silent no-op for an empty path
+	case leafTrailingSlash:
+		c.notice = "finish the name after the last /"
+	case leafEmptySegment:
+		c.notice = "remove the empty path segment"
+	case leafPathIsFolder:
+		c.notice = strings.TrimSpace(field) + " is a folder — add /name"
+	case leafExistingEntry:
+		c.notice = "entry exists — esc, then E to edit"
+	case leafCaseCollision:
+		c.notice = "exists as " + strconv.Quote(c.idx.caseCollisionCanonical(field)) + " (case differs)"
+	default: // leafNew
+		c.notice = ""
+		if c.mode == composeGenerate {
+			c.step = stepLength
+		} else {
+			c.step = stepSecret
 		}
 	}
 	return c

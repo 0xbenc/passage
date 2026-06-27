@@ -28,6 +28,14 @@ func (f textField) displayString() string {
 	return strings.Repeat("•", len(f.value))
 }
 
+// withValue replaces the buffer with value and puts the cursor at the end. Used
+// by path completion to splice a completed segment into the field.
+func (f textField) withValue(value string) textField {
+	f.value = []rune(value)
+	f.cursor = len(f.value)
+	return f
+}
+
 // update applies one keystroke. key is the normalized key name; text is the
 // printable text (if any).
 func (f textField) update(key, text string) textField {
