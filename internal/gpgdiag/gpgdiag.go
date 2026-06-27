@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/0xbenc/passage/internal/passstore"
 )
 
 type Checker struct {
@@ -15,26 +17,71 @@ type Checker struct {
 	StoreRoot string
 }
 
+// Verdict is the per-scope answer to "can I write a password here?".
+type Verdict string
+
+const (
+	// VerdictWritable: gpg can encrypt to every recipient — pass insert/edit
+	// will succeed. Verified by an actual probe-encrypt, not by ownertrust.
+	VerdictWritable Verdict = "writable"
+	// VerdictReadOnly: at least one recipient is not a valid encryption target,
+	// but you own a recipient secret key so you can still decrypt.
+	VerdictReadOnly Verdict = "read_only"
+	// VerdictNoAccess: cannot encrypt to all recipients and you own none, so
+	// you can neither write nor decrypt here.
+	VerdictNoAccess Verdict = "no_access"
+	// VerdictUninitialized: no .gpg-id governs this path.
+	VerdictUninitialized Verdict = "uninitialized"
+)
+
+// RecipientStatus classifies one .gpg-id recipient by what passage can do with
+// it. The encryptable test is an actual probe-encrypt; the invalid/unusable
+// split is read from gpg's computed validity only to drive fix messaging.
+type RecipientStatus string
+
+const (
+	RecipientOwned       RecipientStatus = "owned"       // secret key present (you can decrypt)
+	RecipientEncryptable RecipientStatus = "encryptable" // probe-encrypt succeeds
+	RecipientInvalid     RecipientStatus = "invalid"     // present but not encryptable — local-sign can fix
+	RecipientUnusable    RecipientStatus = "unusable"    // expired/revoked/disabled — local-sign cannot fix
+	RecipientMissing     RecipientStatus = "missing"     // not in the keyring — needs import
+)
+
 type DoctorReport struct {
 	SchemaVersion int           `json:"schema_version"`
 	StoreRoot     string        `json:"store_root"`
 	PassOK        bool          `json:"pass_ok"`
 	GPGOK         bool          `json:"gpg_ok"`
 	Clipboard     []string      `json:"clipboard"`
-	Stores        []StoreReport `json:"stores"`
+	Stores        []ScopeReport `json:"stores"`
 	Warnings      []string      `json:"warnings,omitempty"`
 }
 
-type StoreReport struct {
+// ScopeReport is the verdict for one recipient scope (a directory's governing
+// .gpg-id). It is shared by `doctor` and `access`.
+type ScopeReport struct {
 	Label          string   `json:"label"`
+	Scope          string   `json:"scope"`
 	Path           string   `json:"path"`
 	GPGIDPath      string   `json:"gpg_id_path"`
 	Status         string   `json:"status"`
+	Verdict        Verdict  `json:"verdict"`
 	RecipientCount int      `json:"recipient_count"`
-	Missing        []string `json:"missing,omitempty"`
-	Untrusted      []string `json:"untrusted,omitempty"`
 	Owned          []string `json:"owned,omitempty"`
-	Trusted        []string `json:"trusted,omitempty"`
+	Encryptable    []string `json:"encryptable,omitempty"`
+	Invalid        []string `json:"invalid,omitempty"`
+	Unusable       []string `json:"unusable,omitempty"`
+	Missing        []string `json:"missing,omitempty"`
+	Fixable        string   `json:"fixable,omitempty"`
+}
+
+// AccessReport is the envelope for the `passage access` command.
+type AccessReport struct {
+	SchemaVersion int           `json:"schema_version"`
+	StoreRoot     string        `json:"store_root"`
+	Entry         string        `json:"entry,omitempty"`
+	Scopes        []ScopeReport `json:"scopes"`
+	Warnings      []string      `json:"warnings,omitempty"`
 }
 
 type LocalKey struct {
@@ -69,7 +116,7 @@ func (c Checker) Doctor(ctx context.Context) DoctorReport {
 	} else {
 		report.Stores = stores
 		for _, store := range stores {
-			if store.Status != "ok" {
+			if store.Verdict != VerdictWritable {
 				report.Warnings = append(report.Warnings, fmt.Sprintf("%s: %s", store.Label, store.Status))
 			}
 		}
@@ -77,63 +124,223 @@ func (c Checker) Doctor(ctx context.Context) DoctorReport {
 	return report
 }
 
-func (c Checker) VerifyStores(ctx context.Context) ([]StoreReport, error) {
+// VerifyStores classifies every recipient scope in the store. Scopes are the
+// directories that carry a .gpg-id at any depth (pass's real layout), not just
+// the root and its immediate children.
+func (c Checker) VerifyStores(ctx context.Context) ([]ScopeReport, error) {
 	root := c.StoreRoot
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("password store root is empty")
 	}
-	info, err := os.Stat(root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("password store directory %s does not exist", root)
-		}
-		return nil, fmt.Errorf("stat password store %s: %w", root, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("password store path %s is not a directory", root)
-	}
-
-	trust, err := c.ownerTrust(ctx)
+	scopes, err := passstore.ScopeDirs(root)
 	if err != nil {
 		return nil, err
 	}
-
-	dirs := []string{root}
-	labels := []string{"default"}
-	children, err := os.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read password store %s: %w", root, err)
+	if len(scopes) == 0 {
+		// No .gpg-id anywhere: report the root as uninitialized so doctor still
+		// tells the user the store needs `pass init`.
+		return []ScopeReport{{
+			Label:     "default",
+			Path:      root,
+			GPGIDPath: filepath.Join(root, ".gpg-id"),
+			Status:    "no .gpg-id",
+			Verdict:   VerdictUninitialized,
+		}}, nil
 	}
-	anySubGPGID := false
-	for _, child := range children {
-		if !child.IsDir() {
-			continue
+	reports := make([]ScopeReport, 0, len(scopes))
+	for _, rel := range scopes {
+		dir := root
+		if rel != "" {
+			dir = filepath.Join(root, filepath.FromSlash(rel))
 		}
-		if child.Name() == ".git" || child.Name() == ".gpg" {
-			continue
-		}
-		dir := filepath.Join(root, child.Name())
-		dirs = append(dirs, dir)
-		labels = append(labels, child.Name())
-		if _, err := os.Stat(filepath.Join(dir, ".gpg-id")); err == nil {
-			anySubGPGID = true
-		}
-	}
-
-	rootHasGPGID := fileExists(filepath.Join(root, ".gpg-id"))
-	skipRoot := !rootHasGPGID && anySubGPGID
-	reports := make([]StoreReport, 0, len(dirs))
-	for i, dir := range dirs {
-		if i == 0 && skipRoot {
-			continue
-		}
-		report, err := c.verifyOneStore(ctx, labels[i], dir, trust)
+		report, err := c.verifyScope(ctx, rel, dir)
 		if err != nil {
 			return nil, err
 		}
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+// Access returns the verdict governing one entry, resolving the nearest
+// ancestor .gpg-id exactly as pass would.
+func (c Checker) Access(ctx context.Context, entry string) (ScopeReport, error) {
+	root := c.StoreRoot
+	if strings.TrimSpace(root) == "" {
+		return ScopeReport{}, errors.New("password store root is empty")
+	}
+	entryDir := filepath.Dir(filepath.Join(root, filepath.FromSlash(entry)))
+	gpgIDPath, ids, ok, err := passstore.ResolveRecipientsFile(root, entryDir)
+	if err != nil {
+		return ScopeReport{}, err
+	}
+	if !ok {
+		return ScopeReport{
+			Label:   "default",
+			Scope:   "",
+			Path:    entryDir,
+			Status:  "no .gpg-id",
+			Verdict: VerdictUninitialized,
+		}, nil
+	}
+	report := c.reportForRecipients(ctx, ids)
+	scopeDir := filepath.Dir(gpgIDPath)
+	report.Scope = relScope(root, scopeDir)
+	report.Label = labelFor(report.Scope)
+	report.Path = scopeDir
+	report.GPGIDPath = gpgIDPath
+	return report, nil
+}
+
+// AccessAll returns a verdict for every scope in the store.
+func (c Checker) AccessAll(ctx context.Context) (AccessReport, error) {
+	scopes, err := c.VerifyStores(ctx)
+	if err != nil {
+		return AccessReport{}, err
+	}
+	report := AccessReport{SchemaVersion: 1, StoreRoot: c.StoreRoot, Scopes: scopes}
+	for _, s := range scopes {
+		if s.Verdict != VerdictWritable {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: %s", s.Label, s.Status))
+		}
+	}
+	return report, nil
+}
+
+func (c Checker) verifyScope(ctx context.Context, rel string, dir string) (ScopeReport, error) {
+	gpgIDPath := filepath.Join(dir, ".gpg-id")
+	data, err := os.ReadFile(gpgIDPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ScopeReport{
+				Label:     labelFor(rel),
+				Scope:     rel,
+				Path:      dir,
+				GPGIDPath: gpgIDPath,
+				Status:    "no .gpg-id",
+				Verdict:   VerdictUninitialized,
+			}, nil
+		}
+		return ScopeReport{}, fmt.Errorf("read %s: %w", gpgIDPath, err)
+	}
+	report := c.reportForRecipients(ctx, passstore.ParseGPGID(data))
+	report.Label = labelFor(rel)
+	report.Scope = rel
+	report.Path = dir
+	report.GPGIDPath = gpgIDPath
+	return report, nil
+}
+
+func (c Checker) reportForRecipients(ctx context.Context, ids []string) ScopeReport {
+	report := ScopeReport{RecipientCount: len(ids)}
+	if len(ids) == 0 {
+		report.Status = "empty .gpg-id"
+		report.Verdict = VerdictUninitialized
+		return report
+	}
+	// The authoritative writable gate is a single probe-encrypt to ALL
+	// recipients — exactly what `pass` does. Relying on it (rather than on the
+	// per-recipient buckets) means an owned-but-unusable recipient — e.g. your
+	// own expired key, which `--list-secret-keys` still reports — cannot produce
+	// a false "writable" that would let `pass insert` fail mid-encrypt.
+	if c.scopeWritable(ctx, ids) {
+		// Every recipient is a valid target; only split owned vs encryptable for
+		// display (one cheap secret-key check each, no probes).
+		for _, id := range ids {
+			if c.hasSecret(ctx, id) {
+				report.Owned = append(report.Owned, id)
+			} else {
+				report.Encryptable = append(report.Encryptable, id)
+			}
+		}
+		report.Verdict = VerdictWritable
+		report.Status = "writable"
+		return report
+	}
+	// Not writable: classify each recipient to surface the blockers and decide
+	// read-only (you own a secret key, so you can still decrypt) vs no-access.
+	owned := false
+	ownTrustFixable := false
+	for _, id := range ids {
+		switch c.recipientStatus(ctx, id) {
+		case RecipientOwned:
+			report.Owned = append(report.Owned, id)
+			owned = true
+			// A key you own that still isn't a valid encryption target — and
+			// isn't expired/revoked — is the new-machine case: your freshly
+			// imported secret key just needs ultimate trust, which `passage
+			// trust` can set because the secret proves it's yours.
+			if !c.canEncryptTo(ctx, id) && !c.Unusable(ctx, id) {
+				ownTrustFixable = true
+			}
+		case RecipientEncryptable:
+			report.Encryptable = append(report.Encryptable, id)
+		case RecipientInvalid:
+			report.Invalid = append(report.Invalid, id)
+		case RecipientUnusable:
+			report.Unusable = append(report.Unusable, id)
+		default:
+			report.Missing = append(report.Missing, id)
+		}
+	}
+	if owned {
+		report.Verdict = VerdictReadOnly
+		report.Status = "read-only"
+	} else {
+		report.Verdict = VerdictNoAccess
+		report.Status = "no access"
+	}
+	report.Fixable = fixHint(report)
+	if report.Fixable == "" && ownTrustFixable {
+		report.Fixable = "trust"
+	}
+	return report
+}
+
+// recipientStatus is the load-bearing classifier. The encryptable test is a
+// real probe-encrypt — the ground truth of whether `pass` can encrypt to this
+// recipient — because gpg's gate is computed validity, not ownertrust: a
+// locally-signed key encrypts with no ownertrust record, while an ownertrust=4
+// key with no certification still fails.
+func (c Checker) recipientStatus(ctx context.Context, id string) RecipientStatus {
+	if c.hasSecret(ctx, id) {
+		return RecipientOwned
+	}
+	out, err := c.runGPG(ctx, "--batch", "--with-colons", "--list-keys", id)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return RecipientMissing
+	}
+	if c.canEncryptTo(ctx, id) {
+		return RecipientEncryptable
+	}
+	if keyUnusable(out) {
+		return RecipientUnusable
+	}
+	return RecipientInvalid
+}
+
+// canEncryptTo asks gpg to do exactly what `pass` will do — encrypt to the
+// literal recipient selectors — with no secret and no tty. rc==0 means every
+// listed recipient is a valid encryption target.
+func (c Checker) canEncryptTo(ctx context.Context, ids ...string) bool {
+	args := []string{"--batch", "--no-tty", "--yes", "--encrypt", "--output", os.DevNull}
+	for _, id := range ids {
+		args = append(args, "--recipient", id)
+	}
+	cmd := exec.CommandContext(ctx, c.gpg(), args...)
+	cmd.Stdin = strings.NewReader("")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
+}
+
+// scopeWritable is the single authoritative probe for a whole scope: encrypt to
+// all recipients at once. It mirrors pass byte-for-byte.
+func (c Checker) scopeWritable(ctx context.Context, ids []string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	return c.canEncryptTo(ctx, ids...)
 }
 
 func (c Checker) LocalKeys(ctx context.Context) ([]LocalKey, error) {
@@ -179,67 +386,73 @@ func (c Checker) LocalKeys(ctx context.Context) ([]LocalKey, error) {
 	return keys, nil
 }
 
-func (c Checker) verifyOneStore(ctx context.Context, label string, dir string, trust map[string]string) (StoreReport, error) {
-	report := StoreReport{
-		Label:     label,
-		Path:      dir,
-		GPGIDPath: filepath.Join(dir, ".gpg-id"),
-	}
-	data, err := os.ReadFile(report.GPGIDPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			report.Status = "no .gpg-id"
-			return report, nil
-		}
-		return report, fmt.Errorf("read %s: %w", report.GPGIDPath, err)
-	}
-	ids := parseGPGID(data)
-	report.RecipientCount = len(ids)
-	if len(ids) == 0 {
-		report.Status = "empty .gpg-id"
-		return report, nil
-	}
-	for _, id := range ids {
-		switch c.recipientStatus(ctx, id, trust) {
-		case "owned":
-			report.Owned = append(report.Owned, id)
-		case "trusted":
-			report.Trusted = append(report.Trusted, id)
-		case "untrusted":
-			report.Untrusted = append(report.Untrusted, id)
-		default:
-			report.Missing = append(report.Missing, id)
-		}
-	}
-	switch {
-	case len(report.Missing) > 0:
-		report.Status = "missing recipients"
-	case len(report.Untrusted) > 0:
-		report.Status = "untrusted recipients"
-	default:
-		report.Status = "ok"
-	}
-	return report, nil
+// RecipientStatus classifies a single recipient selector. Exported for the
+// trust engine so it shares one definition of "encryptable" with the verdict.
+func (c Checker) RecipientStatus(ctx context.Context, id string) RecipientStatus {
+	return c.recipientStatus(ctx, id)
 }
 
-func (c Checker) recipientStatus(ctx context.Context, id string, trust map[string]string) string {
-	if c.hasSecret(ctx, id) {
-		return "owned"
+// CanEncryptTo reports whether gpg can encrypt to every listed selector
+// non-interactively (the authoritative writable probe).
+func (c Checker) CanEncryptTo(ctx context.Context, ids ...string) bool {
+	return c.canEncryptTo(ctx, ids...)
+}
+
+// ScopeWritable reports whether a whole recipient set is encryptable in one
+// probe.
+func (c Checker) ScopeWritable(ctx context.Context, ids []string) bool {
+	return c.scopeWritable(ctx, ids)
+}
+
+// HasSecret reports whether a secret key is present for the selector.
+func (c Checker) HasSecret(ctx context.Context, id string) bool {
+	return c.hasSecret(ctx, id)
+}
+
+// Unusable reports whether the key's computed validity is terminal —
+// expired/revoked/invalid/disabled — so a caller knows trust can't rescue it.
+func (c Checker) Unusable(ctx context.Context, id string) bool {
+	out, err := c.runGPG(ctx, "--batch", "--with-colons", "--list-keys", id)
+	if err != nil {
+		return false
 	}
+	return keyUnusable(out)
+}
+
+// OwnerTrust returns the fingerprint→ownertrust-level map (diagnostic only; it
+// does not drive the writable verdict).
+func (c Checker) OwnerTrust(ctx context.Context) (map[string]string, error) {
+	return c.ownerTrust(ctx)
+}
+
+// ResolvePrimary returns the primary fingerprint and primary UID for a
+// recipient selector, or ok=false when it is not in the keyring.
+func (c Checker) ResolvePrimary(ctx context.Context, id string) (fingerprint string, uid string, ok bool) {
 	out, err := c.runGPG(ctx, "--batch", "--with-colons", "--list-keys", id)
 	if err != nil || strings.TrimSpace(out) == "" {
-		return "missing"
+		return "", "", false
 	}
-	fps := primaryFingerprints(out)
-	if len(fps) == 0 {
-		return "missing"
-	}
-	for _, fp := range fps {
-		if level := trust[fp]; level == "4" || level == "5" {
-			return "trusted"
+	pubPending := false
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 10 {
+			continue
+		}
+		switch fields[0] {
+		case "pub":
+			pubPending = true
+		case "fpr":
+			if pubPending && fingerprint == "" {
+				fingerprint = fields[9]
+				pubPending = false
+			}
+		case "uid":
+			if uid == "" {
+				uid = fields[9]
+			}
 		}
 	}
-	return "untrusted"
+	return fingerprint, uid, fingerprint != ""
 }
 
 func (c Checker) hasSecret(ctx context.Context, id string) bool {
@@ -282,50 +495,76 @@ func (c Checker) gpg() string {
 	return c.GPGBinary
 }
 
-func parseGPGID(data []byte) []string {
-	var ids []string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			ids = append(ids, line)
-		}
-	}
-	return ids
-}
-
-func primaryFingerprints(colons string) []string {
-	var fps []string
-	pubPending := false
+// keyUnusable reports whether a key's computed validity is terminal — expired,
+// revoked, invalid, or disabled — so the caller can say "local-sign won't help"
+// instead of offering a fix that can't work.
+func keyUnusable(colons string) bool {
 	for _, line := range strings.Split(colons, "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) < 10 {
+		if !strings.HasPrefix(line, "pub:") {
 			continue
 		}
-		switch fields[0] {
-		case "pub":
-			pubPending = true
-		case "fpr":
-			if pubPending {
-				fps = append(fps, fields[9])
-				pubPending = false
-			}
+		fields := strings.Split(line, ":")
+		if len(fields) < 2 || fields[1] == "" {
+			return false
+		}
+		switch fields[1][0] {
+		case 'e', 'r', 'i', 'd':
+			return true
+		default:
+			return false
 		}
 	}
-	return fps
+	return false
 }
 
+func fixHint(report ScopeReport) string {
+	if report.Verdict == VerdictWritable || report.Verdict == VerdictUninitialized {
+		return ""
+	}
+	if len(report.Missing) > 0 {
+		return "import"
+	}
+	if len(report.Invalid) > 0 {
+		return "trust"
+	}
+	if len(report.Unusable) > 0 {
+		return "unfixable"
+	}
+	return ""
+}
+
+func labelFor(rel string) string {
+	if rel == "" {
+		return "default"
+	}
+	return rel
+}
+
+func relScope(root, dir string) string {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// OwnerTrustLabel maps a gpg ownertrust value to its name. The trustdb encoding
+// is 0=unknown, 1=expired, 2=undefined, 3=never, 4=marginal, 5=full,
+// 6=ultimate (verified empirically — an own key auto-trusts to 6).
 func OwnerTrustLabel(level string) string {
 	switch level {
-	case "5":
+	case "6":
 		return "ultimate"
-	case "4":
+	case "5":
 		return "full"
-	case "3":
+	case "4":
 		return "marginal"
-	case "2":
+	case "3":
 		return "never"
+	case "2":
+		return "undefined"
 	case "1":
-		return "unknown"
+		return "expired"
 	default:
 		return "unset"
 	}
@@ -333,11 +572,6 @@ func OwnerTrustLabel(level string) string {
 
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
-	return err == nil
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
 	return err == nil
 }
 

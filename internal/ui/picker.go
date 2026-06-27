@@ -27,22 +27,53 @@ const (
 	ActionClearRecents   Action = "clear_recents"
 	ActionDoctor         Action = "doctor"
 	ActionKeys           Action = "keys"
+	ActionNew            Action = "new"
+	ActionGenerate       Action = "generate"
+	ActionEdit           Action = "edit"
+	ActionRemove         Action = "remove"
+	ActionTrust          Action = "trust"
+	ActionImport         Action = "import"
+	ActionImportSecret   Action = "import_secret"
 	ActionQuit           Action = "quit"
 )
 
+// isGapAction reports whether an action must run with the TUI torn down so a
+// child process (pinentry for local-signing, $EDITOR) can own the real
+// terminal. The picker quits returning the request; the CLI runs it in the gap
+// and relaunches the picker (Pattern A).
+func isGapAction(action Action) bool {
+	return action == ActionEdit || action == ActionTrust || action == ActionImport || action == ActionImportSecret
+}
+
+// isWriteAction reports whether an action mutates the store (used to widen the
+// action timeout, since encryption + a possible git commit-signing prompt can
+// outlast the read timeout).
+func IsWriteAction(action Action) bool {
+	switch action {
+	case ActionNew, ActionGenerate, ActionRemove:
+		return true
+	default:
+		return false
+	}
+}
+
 type PickOptions struct {
-	Input        io.Reader
-	Output       io.Writer
-	NoAltScreen  bool
-	NoColor      bool
-	Theme        termstyle.Theme
-	ThemeFile    string
-	Title        string
-	Version      string
-	StoreRoot    string
-	Filter       string
-	MFAOnly      bool
-	Message      string
+	Input       io.Reader
+	Output      io.Writer
+	NoAltScreen bool
+	NoColor     bool
+	Theme       termstyle.Theme
+	ThemeFile   string
+	Title       string
+	Version     string
+	StoreRoot   string
+	Filter      string
+	MFAOnly     bool
+	Message     string
+	MessageErr  bool
+	// SelectPath restores the cursor to this entry path after a relaunch, so a
+	// Pattern-A gap action does not reset the user's place in the list.
+	SelectPath   string
 	RunAction    ActionRunner
 	ThemeConfig  termstyle.ThemeConfig
 	ThemePath    string
@@ -53,6 +84,10 @@ type PickOptions struct {
 	// elapses — distinct from the ActionClearClipboard action so it does not
 	// flash a busy box.
 	ClearClipboard func(context.Context) error
+	// LoadAccess computes each entry path's write verdict
+	// (writable/read_only/no_access). It runs asynchronously after launch so the
+	// cold start stays instant on a large store; badges appear once it returns.
+	LoadAccess func(context.Context) map[string]string
 }
 
 type PickResult struct {
@@ -67,6 +102,12 @@ type ActionRequest struct {
 	Entry   passstore.Entry
 	Filter  string
 	MFAOnly bool
+	// Composer-supplied fields for ActionNew / ActionGenerate.
+	NewPath   string
+	Content   []byte
+	Generate  bool
+	Length    int
+	NoSymbols bool
 }
 
 type ActionOutcome struct {
@@ -167,7 +208,13 @@ type pickerModel struct {
 	help           bool // the ? key reference overlay is open
 	clip           *clipState
 	clearClipboard func(context.Context) error
+	composer       *composerModel
+	access         map[string]string // entry path -> write verdict (async-loaded)
+	loadAccess     func(context.Context) map[string]string
 }
+
+// accessLoadedMsg delivers the asynchronously-computed write verdicts.
+type accessLoadedMsg struct{ access map[string]string }
 
 // clipState tracks an armed clipboard: which tool holds it and when the
 // auto-clear fires. Recomputed from the wall clock, never holds the secret.
@@ -248,6 +295,7 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		version:        strings.TrimSpace(opts.Version),
 		storeRoot:      opts.StoreRoot,
 		message:        opts.Message,
+		messageErr:     opts.MessageErr,
 		noAltScreen:    opts.NoAltScreen,
 		width:          92,
 		height:         28,
@@ -260,16 +308,37 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		saveTheme:      opts.SaveTheme,
 		glyphs:         opts.Glyphs,
 		clearClipboard: opts.ClearClipboard,
+		loadAccess:     opts.LoadAccess,
 	}
 	if len(model.glyphs.Spinner) == 0 {
 		model.glyphs = termstyle.DefaultGlyphs()
 	}
 	model.applyFilter()
+	if path := strings.TrimSpace(opts.SelectPath); path != "" {
+		for i, ranked := range model.filtered {
+			if model.entries[ranked.Index].Path == path {
+				model.cursor = i
+				break
+			}
+		}
+		model.ensureVisible()
+	}
 	return model
 }
 
 func (m pickerModel) Init() tea.Cmd {
+	if m.loadAccess != nil {
+		return tea.Batch(tea.RequestWindowSize, m.loadAccessCmd())
+	}
 	return tea.RequestWindowSize
+}
+
+func (m pickerModel) loadAccessCmd() tea.Cmd {
+	load := m.loadAccess
+	ctx := m.ctx
+	return func() tea.Msg {
+		return accessLoadedMsg{access: load(ctx)}
+	}
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -312,12 +381,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionDoneMsg:
 		m.applyOutcome(msg.id, msg.outcome)
 		return m, m.maybeStartTick()
+	case accessLoadedMsg:
+		m.access = msg.access
+		return m, nil
 	case themeSaveDoneMsg:
 		m.applyThemeSave(msg)
 	case tea.KeyPressMsg:
 		key := normalizedKey(msg)
 		if m.themeEditor != nil {
 			return m.updateThemeEditor(msg, key)
+		}
+		if m.composer != nil {
+			return m.updateComposer(msg, key)
 		}
 		if m.help {
 			if key == "ctrl+c" || key == "ctrl+q" {
@@ -389,6 +464,30 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+k":
 			return m.trigger(ActionKeys)
 		default:
+			// Uppercase command keys act on the selection regardless of the
+			// filter. Fuzzy matching is case-insensitive, so uppercase is never
+			// needed to filter — leaving lowercase free to always type, so you
+			// can narrow with a lowercase filter then act with a shifted key.
+			switch msg.Text {
+			case "N":
+				return m.openComposer(composePassword), nil
+			case "G":
+				return m.openComposer(composeGenerate), nil
+			case "E":
+				return m.trigger(ActionEdit)
+			case "T":
+				return m.trigger(ActionTrust)
+			case "I":
+				return m.trigger(ActionImport)
+			case "S":
+				return m.trigger(ActionImportSecret)
+			case "D":
+				if _, ok := m.selectedEntry(); ok {
+					return m.startConfirm(ActionRemove), nil
+				}
+				m.setNotice("No entry selected.", true)
+				return m, nil
+			}
 			// "?" opens the key reference only when the filter is empty, so a
 			// path containing "?" can still be typed into a non-empty filter.
 			if msg.Text == "?" && m.query == "" {
@@ -454,7 +553,52 @@ func (m pickerModel) View() tea.View {
 
 // overlayActive reports whether a modal-like surface owns the keyboard.
 func (m pickerModel) overlayActive() bool {
-	return m.busy != nil || m.modal != nil || m.confirm != nil || m.help || m.themeEditor != nil
+	return m.busy != nil || m.modal != nil || m.confirm != nil || m.help || m.themeEditor != nil || m.composer != nil
+}
+
+func (m pickerModel) openComposer(mode composerMode) pickerModel {
+	c := newComposer(mode)
+	m.composer = &c
+	m.message = ""
+	m.messageErr = false
+	return m
+}
+
+func (m pickerModel) updateComposer(msg tea.KeyPressMsg, key string) (pickerModel, tea.Cmd) {
+	if key == "ctrl+c" || key == "ctrl+q" {
+		m.action = ActionQuit
+		return m, tea.Quit
+	}
+	c := m.composer.update(key, msg.Text)
+	m.composer = &c
+	if !c.done {
+		return m, nil
+	}
+	if c.canceled {
+		m.composer = nil
+		m.setNotice("Cancelled.", false)
+		return m, nil
+	}
+	result := c.result()
+	m.composer = nil
+	if result.Path == "" {
+		m.setNotice("Entry path is required.", true)
+		return m, nil
+	}
+	action := ActionNew
+	if result.Generate {
+		action = ActionGenerate
+	}
+	return m.startRequest(ActionRequest{
+		Action:    action,
+		Filter:    m.query,
+		MFAOnly:   m.mfaOnly,
+		NewPath:   result.Path,
+		Content:   result.Content,
+		Generate:  result.Generate,
+		Length:    result.Length,
+		NoSymbols: result.NoSymbols,
+	}, actionBusyTitle(action), result.Path)
 }
 
 func (m pickerModel) handleMouseWheel(mouse tea.Mouse) pickerModel {
@@ -578,6 +722,10 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 		tail = append(tail, "")
 		tail = append(tail, m.confirmLines(bodyWidth, theme)...)
 	}
+	if m.composer != nil {
+		tail = append(tail, "")
+		tail = append(tail, m.composerLines(bodyWidth, theme)...)
+	}
 	listHeight := max(1, m.height-pickerShellStructuralLines(footer)-len(header)-len(tail))
 	return layoutSpec{
 		width:       width,
@@ -618,6 +766,14 @@ func helpLines(theme pickerTheme) []string {
 	b = append(b, row("^R", "reveal password"))
 	b = append(b, row("^T", "TOTP code, or reveal secret on an mfa row"))
 	b = append(b, row("^P", "toggle pin"))
+	b = append(b, "", theme.accent("WRITE & TRUST  (shifted — lowercase still filters)"))
+	b = append(b, row("N", "new entry (type or generate)"))
+	b = append(b, row("G", "generate a new entry"))
+	b = append(b, row("E", "edit in $EDITOR"))
+	b = append(b, row("D", "delete (confirm)"))
+	b = append(b, row("T", "trust — make a read-only folder writable"))
+	b = append(b, row("I", "import + trust a folder of public keys"))
+	b = append(b, row("S", "import your secret key(s) — set up your identity"))
 	b = append(b, "", theme.accent("VIEW & MANAGE"))
 	b = append(b, row("^F", "toggle mfa-only"))
 	b = append(b, row("^O", "theme editor"))
@@ -700,7 +856,7 @@ func (m pickerModel) listLines(width int, theme pickerTheme, available int) []st
 	metaWidth := 0
 	for vi := start; vi < end; vi++ {
 		entry := m.entries[m.filtered[vi].Index]
-		metaWidth = max(metaWidth, termstyle.VisibleWidth(entryRightPlain(entry, m.now())))
+		metaWidth = max(metaWidth, termstyle.VisibleWidth(m.entryRightPlain(entry)))
 	}
 	metaWidth = clamp(metaWidth, 0, max(0, width-16))
 	var lines []string
@@ -768,7 +924,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 		caret = "> "
 	}
 	index := fmt.Sprintf("%3d ", visibleIndex+1)
-	markers := entryMarkers(entry) // "PIN MFA" plain, or ""
+	markers := m.entryMarkers(entry) // "PIN MFA RO" plain, or ""
 	lastUsed := humanizeRelative(entry.LastUsed, m.now())
 	rightW := min(metaWidth, termstyle.VisibleWidth(strings.TrimSpace(markers+" "+lastUsed)))
 	leftPad := metaWidth - rightW
@@ -792,8 +948,11 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 		}
 		var right strings.Builder
 		right.WriteString(bar(strings.Repeat(" ", leftPad)))
-		if markers != "" {
-			right.WriteString(theme.onBar(termstyle.RoleAccent, markers))
+		// On the selection bar the whole row is already highlighted, so the RO/NO
+		// badge shares the accent styling rather than fighting the bar.
+		onBar := func(s string) string { return theme.onBar(termstyle.RoleAccent, s) }
+		if sm := m.styledMarkers(entry, onBar, onBar); sm != "" {
+			right.WriteString(sm)
 			right.WriteString(bar(" "))
 		}
 		right.WriteString(theme.onBar(termstyle.RoleMuted, lastUsed))
@@ -804,30 +963,70 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 	title := highlightTitle(entry.Display, positions, leftWidth, theme.primary, theme.search)
 	var right strings.Builder
 	right.WriteString(strings.Repeat(" ", leftPad))
-	if markers != "" {
-		right.WriteString(theme.accent(markers))
+	if sm := m.styledMarkers(entry, theme.accent, theme.warning); sm != "" {
+		right.WriteString(sm)
 		right.WriteString(" ")
 	}
 	right.WriteString(theme.muted(lastUsed))
 	return leftPrefix + termstyle.PadRight(title, leftWidth) + "  " + right.String()
 }
 
-// entryMarkers returns the plain marker tags for an entry's pin/MFA state.
-func entryMarkers(entry passstore.Entry) string {
-	tags := make([]string, 0, 2)
+// accessBadge maps a write verdict to a short row tag. Writable and unknown
+// produce no badge — only the can't-write states are flagged.
+func accessBadge(verdict string) string {
+	switch verdict {
+	case "read_only":
+		return "RO"
+	case "no_access":
+		return "NO"
+	default:
+		return ""
+	}
+}
+
+// entryMarkers returns the plain marker tags for an entry's pin/MFA/access
+// state, used both for rendering and for sizing the metadata column.
+func (m pickerModel) entryMarkers(entry passstore.Entry) string {
+	tags := make([]string, 0, 3)
 	if entry.Pinned {
 		tags = append(tags, "PIN")
 	}
 	if entry.HasMFA {
 		tags = append(tags, "MFA")
 	}
+	if badge := accessBadge(m.access[entry.Path]); badge != "" {
+		tags = append(tags, badge)
+	}
 	return strings.Join(tags, " ")
+}
+
+// styledMarkers renders the pin/MFA tags with accentFn and the read-only badge
+// with warnFn (so RO/NO reads as a warning, not a positive tag).
+func (m pickerModel) styledMarkers(entry passstore.Entry, accentFn, warnFn func(string) string) string {
+	var pinMFA []string
+	if entry.Pinned {
+		pinMFA = append(pinMFA, "PIN")
+	}
+	if entry.HasMFA {
+		pinMFA = append(pinMFA, "MFA")
+	}
+	var out string
+	if len(pinMFA) > 0 {
+		out = accentFn(strings.Join(pinMFA, " "))
+	}
+	if badge := accessBadge(m.access[entry.Path]); badge != "" {
+		if out != "" {
+			out += " "
+		}
+		out += warnFn(badge)
+	}
+	return out
 }
 
 // entryRightPlain is the plain (unstyled) metadata column for an entry, used to
 // size the stable metadata column across the visible rows.
-func entryRightPlain(entry passstore.Entry, now time.Time) string {
-	return strings.TrimSpace(entryMarkers(entry) + " " + humanizeRelative(entry.LastUsed, now))
+func (m pickerModel) entryRightPlain(entry passstore.Entry) string {
+	return strings.TrimSpace(m.entryMarkers(entry) + " " + humanizeRelative(entry.LastUsed, m.now()))
 }
 
 // formatRemaining renders a countdown's seconds, the single place "Ns" is
@@ -909,11 +1108,45 @@ func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
 		lines = append(lines, theme.accent(termstyle.Truncate(strings.Join(state, "   "), width)))
 	}
 	lines = append(lines, theme.muted(termstyle.Truncate("used "+humanizeRelative(entry.LastUsed, m.now()), width)))
+	if verdict := m.access[entry.Path]; verdict != "" {
+		lines = append(lines, "")
+		label := "ACCESS  " + accessVerdictLabel(verdict)
+		if verdict == "writable" {
+			lines = append(lines, theme.accent(termstyle.Truncate(label, width)))
+		} else {
+			lines = append(lines, theme.warning(termstyle.Truncate(label, width)))
+			switch verdict {
+			case "read_only":
+				lines = append(lines, theme.muted(termstyle.Truncate("T  trust to make writable", width)))
+			case "no_access":
+				lines = append(lines, theme.muted(termstyle.Truncate("recipient key missing", width)))
+			}
+		}
+	}
 	lines = append(lines, "")
 	for _, ln := range wrapText("enter copy · ^R reveal · ^T totp · ^P pin", width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
+	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust · I import keys · S import secret", width) {
+		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
+	}
 	return lines
+}
+
+// accessVerdictLabel renders a write verdict for humans.
+func accessVerdictLabel(verdict string) string {
+	switch verdict {
+	case "writable":
+		return "writable"
+	case "read_only":
+		return "read-only"
+	case "no_access":
+		return "no access"
+	case "uninitialized":
+		return "no .gpg-id"
+	default:
+		return verdict
+	}
 }
 
 func (m pickerModel) now() time.Time {
@@ -1054,6 +1287,17 @@ func (m *pickerModel) maybeStartTick() tea.Cmd {
 }
 
 func (m pickerModel) trigger(action Action) (pickerModel, tea.Cmd) {
+	if isGapAction(action) {
+		// These need the real terminal (pinentry / $EDITOR), so quit and let the
+		// CLI run them in the gap, then relaunch us.
+		if actionNeedsEntry(action) {
+			if _, ok := m.selectedEntry(); !ok {
+				m.setNotice("No entry selected.", true)
+				return m, nil
+			}
+		}
+		return m.finish(action), tea.Quit
+	}
 	if m.runAction == nil {
 		switch action {
 		case ActionClearClipboard, ActionClearPins, ActionClearRecents, ActionDoctor, ActionKeys:
@@ -1073,23 +1317,31 @@ func (m pickerModel) startAction(action Action) (pickerModel, tea.Cmd) {
 		m.messageErr = true
 		return m, nil
 	}
-	actionCtx, cancel := context.WithCancel(m.ctx)
-	m.actionSeq++
-	id := m.actionSeq
-	m.activeID = id
-	req := ActionRequest{
+	return m.startRequest(ActionRequest{
 		Action:  action,
 		Entry:   entry,
 		Filter:  m.query,
 		MFAOnly: m.mfaOnly,
+	}, actionBusyTitle(action), entry.Path)
+}
+
+// startRequest spins up the busy box and dispatches a request to the action
+// runner. Shared by the entry-action path (startAction) and the composer.
+func (m pickerModel) startRequest(req ActionRequest, busyTitle, detail string) (pickerModel, tea.Cmd) {
+	if m.runAction == nil {
+		return m, nil
 	}
+	actionCtx, cancel := context.WithCancel(m.ctx)
+	m.actionSeq++
+	id := m.actionSeq
+	m.activeID = id
 	m.message = ""
 	m.messageErr = false
 	m.modal = nil
 	m.busy = &pickerBusy{
 		id:      id,
-		title:   actionBusyTitle(action),
-		detail:  entry.Path,
+		title:   busyTitle,
+		detail:  detail,
 		cancel:  cancel,
 		started: m.now(),
 	}
@@ -1267,9 +1519,22 @@ func (m pickerModel) confirmText(action Action) (string, string) {
 		return "Clear all pins?", fmt.Sprintf("removes %d pin%s", n, suffix)
 	case ActionClearRecents:
 		return "Clear recents?", "forgets last-used times"
+	case ActionRemove:
+		entry, _ := m.selectedEntry()
+		return "Remove " + entry.Path + "?", "deletes the encrypted entry"
 	default:
 		return "Proceed?", ""
 	}
+}
+
+func (m pickerModel) composerLines(width int, theme pickerTheme) []string {
+	boxWidth := clamp(width, 54, 100)
+	body := m.composer.render(boxWidth-4, theme)
+	return splitRendered(renderWorkflowShell(theme, boxWidth, workflowShell{
+		Title:  m.composer.title(),
+		Body:   body,
+		Footer: m.composer.footer(),
+	}))
 }
 
 func (m pickerModel) confirmLines(width int, theme pickerTheme) []string {
@@ -1499,7 +1764,7 @@ func (m pickerModel) maxModalOffset() int {
 
 func actionNeedsEntry(action Action) bool {
 	switch action {
-	case ActionCopy, ActionReveal, ActionTOTP, ActionTogglePin:
+	case ActionCopy, ActionReveal, ActionTOTP, ActionTogglePin, ActionEdit, ActionTrust, ActionGenerate, ActionRemove:
 		return true
 	default:
 		return false
@@ -1526,6 +1791,12 @@ func actionBusyTitle(action Action) string {
 		return "running doctor"
 	case ActionKeys:
 		return "loading keys"
+	case ActionNew:
+		return "creating"
+	case ActionGenerate:
+		return "generating"
+	case ActionRemove:
+		return "removing"
 	default:
 		return "working"
 	}

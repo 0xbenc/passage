@@ -3,12 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/passage/internal/ui"
 )
 
 // TestThemeCommandHelp verifies the standalone `passage theme` command is
@@ -200,6 +202,284 @@ if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then printf '
 	}
 	if string(data) != shown {
 		t.Fatalf("clipboard = %q, shown = %q", data, shown)
+	}
+}
+
+// fakeGPGScript is a stub gpg driven by env vars, mirroring the verdict
+// engine's needs (see gpgdiag tests).
+const fakeGPGScript = `contains() { case " $2 " in *" $1 "*) return 0;; esac; return 1; }
+mode=""; listid=""; recipients=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list-secret-keys) mode=secret; shift; listid="$1"; shift ;;
+    --list-keys) mode=listkeys; shift
+      if [ $# -gt 0 ]; then case "$1" in --*) ;; *) listid="$1"; shift ;; esac; fi ;;
+    --encrypt) mode=encrypt; shift ;;
+    --recipient) shift; recipients="$recipients $1"; shift ;;
+    --output) shift; shift ;;
+    --export-ownertrust) mode=ownertrust; shift ;;
+    *) shift ;;
+  esac
+done
+case "$mode" in
+  secret) contains "$listid" "$GPG_FAKE_SECRET" && exit 0; exit 2 ;;
+  encrypt) for r in $recipients; do contains "$r" "$GPG_FAKE_ENCRYPTABLE" || exit 2; done; exit 0 ;;
+  ownertrust) exit 0 ;;
+  listkeys)
+    if [ -n "$listid" ]; then
+      if contains "$listid" "$GPG_FAKE_PRESENT" || contains "$listid" "$GPG_FAKE_SECRET"; then
+        printf 'pub:-:::::::::::::\nfpr:::::::::%s:\nuid:-:::::::::%s:\n' "$listid" "$listid"; exit 0
+      fi
+      exit 2
+    fi ;;
+esac
+exit 0`
+
+func TestRunAccessJSON(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, root, "owner")
+	writeGPGIDFile(t, filepath.Join(root, "work"), "owner", "carol")
+
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	t.Setenv("PATH", bin)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner carol")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"access", "--json", "--store-dir", root}, &stdout, &stderr, BuildInfo{})
+	// Exit 2 because the work scope is read-only.
+	if code != 2 {
+		t.Fatalf("Run access = %d, want 2; stderr=%s\nstdout=%s", code, stderr.String(), stdout.String())
+	}
+	var got struct {
+		SchemaVersion int `json:"schema_version"`
+		Scopes        []struct {
+			Label   string `json:"label"`
+			Verdict string `json:"verdict"`
+			Fixable string `json:"fixable"`
+		} `json:"scopes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if got.SchemaVersion != 1 {
+		t.Fatalf("schema_version = %d", got.SchemaVersion)
+	}
+	verdicts := map[string]string{}
+	for _, s := range got.Scopes {
+		verdicts[s.Label] = s.Verdict
+	}
+	if verdicts["default"] != "writable" {
+		t.Errorf("default verdict = %q, want writable", verdicts["default"])
+	}
+	if verdicts["work"] != "read_only" {
+		t.Errorf("work verdict = %q, want read_only", verdicts["work"])
+	}
+}
+
+func TestRunAccessSingleEntryWritable(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, root, "owner")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	t.Setenv("PATH", bin)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"access", "personal/bank", "--store-dir", root}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run access entry = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "writable") {
+		t.Fatalf("output missing writable verdict:\n%s", stdout.String())
+	}
+}
+
+func TestRunTrustPlanJSON(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, filepath.Join(root, "work"), "owner", "carol")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	t.Setenv("PATH", bin)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner carol")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	// --json prints the plan only and must never mutate, so no confirm is needed.
+	code := Run([]string{"trust", "work", "--json", "--store-dir", root}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run trust --json = %d; stderr=%s", code, stderr.String())
+	}
+	var got struct {
+		SchemaVersion int    `json:"schema_version"`
+		Strength      string `json:"strength"`
+		Recipients    []struct {
+			Token  string `json:"token"`
+			Action string `json:"action"`
+		} `json:"recipients"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout.String())
+	}
+	if got.SchemaVersion != 1 || got.Strength != "lsign-only" {
+		t.Fatalf("schema/strength = %d/%q", got.SchemaVersion, got.Strength)
+	}
+	actions := map[string]string{}
+	for _, r := range got.Recipients {
+		actions[r.Token] = r.Action
+	}
+	if actions["owner"] != "owned-skip" {
+		t.Errorf("owner = %q, want owned-skip", actions["owner"])
+	}
+	if actions["carol"] != "would-lsign" {
+		t.Errorf("carol = %q, want would-lsign", actions["carol"])
+	}
+}
+
+func TestRunGenerateWritable(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, root, "owner")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	pass := makeScript2(t, bin, "pass", `if [ "$1" = generate ]; then printf 'pw-line\nGenSecret\n'; exit 0; fi; exit 9`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", pass)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"generate", "work/new", "16", "--no-copy", "--store-dir", root, "--state-dir", t.TempDir()}, &stdout, &stderr, BuildInfo{})
+	if code != 0 {
+		t.Fatalf("Run generate = %d; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Generated work/new") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunInsertReadOnlyRefusedBeforeExec(t *testing.T) {
+	root := t.TempDir()
+	writeGPGIDFile(t, filepath.Join(root, "secure"), "owner", "carol")
+	bin := t.TempDir()
+	makeScript(t, bin, "gpg", fakeGPGScript)
+	sentinel := filepath.Join(bin, "pass-was-called")
+	pass := makeScript2(t, bin, "pass", `echo called > "$PASS_SENTINEL"; exit 0`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", pass)
+	t.Setenv("PASS_SENTINEL", sentinel)
+	t.Setenv("GPG_FAKE_SECRET", "owner")
+	t.Setenv("GPG_FAKE_PRESENT", "owner carol")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "owner") // carol not encryptable -> read-only
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"insert", "secure/x", "--store-dir", root, "--state-dir", t.TempDir()}, &stdout, &stderr, BuildInfo{})
+	if code != 1 {
+		t.Fatalf("Run insert = %d, want 1; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "read-only") {
+		t.Fatalf("stderr = %q, want read-only refusal", stderr.String())
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("pass was invoked despite read-only pre-flight; it must refuse before exec")
+	}
+}
+
+// makeScript2 mirrors makeScript but returns the script path (for PASSAGE_PASS_BINARY).
+func makeScript2(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	makeScript(t, dir, name, body)
+	return filepath.Join(dir, name)
+}
+
+// TestInteractiveNewRefusesOverwrite guards against the in-TUI new/generate
+// composer silently clobbering an existing entry (the CLI verbs guard via
+// --force, but the composer has no such flag, so the handler must refuse).
+func TestInteractiveNewRefusesOverwrite(t *testing.T) {
+	store := fakeStore(t) // contains work/github
+	bin := t.TempDir()
+	sentinel := filepath.Join(bin, "pass-called")
+	pass := makeScript2(t, bin, "pass", `echo called > "$PASS_SENTINEL"; exit 0`)
+	t.Setenv("PASSAGE_PASS_BINARY", pass)
+	t.Setenv("PASS_SENTINEL", sentinel)
+
+	r := runner{stdout: io.Discard, stderr: io.Discard, env: os.Environ(), build: BuildInfo{}.normalized()}
+	flags := commonFlags{storeDir: store, stateDir: t.TempDir()}
+	rt, err := r.load(flags)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	out := r.runInteractiveActionOnce(t.Context(), &rt, flags, ui.ActionRequest{
+		Action:  ui.ActionNew,
+		NewPath: "work/github", // already exists
+		Content: []byte("hijack"),
+	})
+	if out.Err == nil || !strings.Contains(out.Err.Error(), "already exists") {
+		t.Fatalf("ActionNew over existing entry: err = %v, want 'already exists'", out.Err)
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Fatal("pass was invoked — the existing entry would have been overwritten")
+	}
+}
+
+func TestDirBrowseEntriesListsSubdirs(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"work", "personal", ".hidden"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "key.asc"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries := dirBrowseEntries(root)
+	if entries[0].Kind != "use" || entries[1].Kind != "up" {
+		t.Fatalf("first rows = %q,%q, want use,up", entries[0].Kind, entries[1].Kind)
+	}
+	kindByTitle := map[string]string{}
+	for _, e := range entries {
+		kindByTitle[e.Title] = e.Kind
+	}
+	if kindByTitle["personal/"] != "dir" || kindByTitle["work/"] != "dir" {
+		t.Fatalf("subdirs missing: %#v", kindByTitle)
+	}
+	// The key file is shown for reference, as a non-selectable "file" row.
+	if kindByTitle["key.asc"] != "file" {
+		t.Fatalf("key file not listed as a file row: %#v", kindByTitle)
+	}
+	if _, ok := kindByTitle[".hidden/"]; ok {
+		t.Fatalf("listed a hidden dir: %#v", kindByTitle)
+	}
+	// directories come before files, each sorted (personal before work).
+	var order []string
+	for _, e := range entries {
+		if e.Kind == "dir" || e.Kind == "file" {
+			order = append(order, e.Kind+":"+e.Title)
+		}
+	}
+	want := []string{"dir:personal/", "dir:work/", "file:key.asc"}
+	if len(order) != len(want) {
+		t.Fatalf("order = %#v, want %#v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order[%d] = %q, want %q", i, order[i], want[i])
+		}
+	}
+}
+
+func writeGPGIDFile(t *testing.T, dir string, ids ...string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gpg-id"), []byte(strings.Join(ids, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write .gpg-id: %v", err)
 	}
 }
 

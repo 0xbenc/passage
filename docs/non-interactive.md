@@ -91,6 +91,31 @@ passage clear-pins
 passage clear-clipboard
 ```
 
+### insert / generate / edit / rm
+
+```sh
+passage insert ENTRY [--multiline] [--force] [--store-dir PATH]
+passage generate ENTRY [LENGTH] [--no-symbols] [--no-copy] [--force] [--json]
+passage edit ENTRY [--store-dir PATH]
+passage rm ENTRY [--recursive] [--yes] [--json] [--store-dir PATH]
+```
+
+The store-writing verbs. They delegate to `pass` (which remains the source of
+truth) and pre-flight the writable verdict, refusing early with a pointer to
+`passage trust` when the target folder is read-only, rather than letting gpg
+hard-fail mid-encrypt.
+
+- `insert` reads the secret from stdin — the first line, or the whole stream
+  with `--multiline`. `--force` overwrites an existing entry.
+- `generate` creates a random password (optional `LENGTH`, `--no-symbols`) and
+  copies it to the clipboard unless `--no-copy`; the secret is never printed.
+- `edit` opens the entry in `$EDITOR` and re-encrypts on save (needs a terminal).
+- `rm` deletes an entry, or a subtree with `--recursive`; it confirms unless
+  `--yes`. (Removal does not encrypt, so it is not gated on writability.)
+
+`insert`, `generate`, and `rm` accept `--json`, emitting `{schema_version,
+entry, action}`.
+
 ### doctor
 
 ```sh
@@ -98,6 +123,64 @@ passage doctor [--json] [--store-dir PATH]
 ```
 
 Checks for `pass`, `gpg`, clipboard tools, and `.gpg-id` recipient health.
+
+### access
+
+```sh
+passage access [ENTRY] [--json] [--store-dir PATH]
+```
+
+Reports, per `.gpg-id` scope, whether you can write (encrypt to every
+recipient). Each scope's `verdict` is one of:
+
+- `writable` — gpg can encrypt to all recipients; `pass insert/edit` will work.
+- `read_only` — you own a recipient (can decrypt) but at least one recipient is
+  not a valid encryption target, so writes would fail.
+- `no_access` — cannot encrypt to all recipients and you own none.
+- `uninitialized` — no `.gpg-id` governs the path.
+
+Writability is decided by a real probe-encrypt (`gpg --encrypt` to the literal
+recipients), not by ownertrust — a locally-signed key counts as writable. When
+not writable, `fixable` hints the remedy: `trust` (local-sign present keys),
+`import` (a recipient key is missing), or `unfixable` (expired/revoked). With an
+`ENTRY` (or folder path) argument, only the governing scope is reported. The
+command exits `2` when any reported scope is not writable.
+
+JSON envelope: `schema_version`, `store_root`, optional `entry`, and `scopes[]`
+with `label`, `scope`, `gpg_id_path`, `verdict`, `recipient_count`, the
+recipient buckets (`owned`, `encryptable`, `invalid`, `unusable`, `missing`),
+and `fixable`.
+
+### trust
+
+```sh
+passage trust [SCOPE] [--full] [--yes] [--json] [--store-dir PATH]
+passage trust --import-dir DIR [--full] [--yes] [--json] [--store-dir PATH]
+```
+
+Makes a read-only scope writable by local-signing the recipients gpg cannot yet
+encrypt to (the Go-native port of bash-zoo's `gpgobble`). `SCOPE` is an entry
+path or folder; its nearest `.gpg-id` governs. Default strength is **local-sign
+only** — exactly the validity pass needs — while `--full` additionally raises
+ownertrust to full (5), never downgrading an existing 5/6.
+
+- `--import-dir DIR` imports every public-key file in `DIR` and trusts them all
+  (gpgobble parity), instead of a store scope's recipients.
+- `--yes` applies without the interactive confirmation.
+- `--json` prints the dry-run **plan only** (`schema_version`, `scope`,
+  `gpg_id_path`, `strength`, `recipients[]` with `token`/`fingerprint`/`action`)
+  and never mutates the keyring.
+
+Local-signing uses your own secret key, so a passphrase prompt (pinentry) may
+appear. It is idempotent: re-running re-signs nothing and never downgrades
+trust. After applying, run `passage access SCOPE` to confirm the scope flipped
+to `writable`.
+
+A recipient whose **secret key you hold** but that isn't a valid encryption
+target yet (the common "new machine, freshly imported secret key" case — gpg
+does not auto-trust imported keys) is set to **ultimate** ownertrust rather than
+local-signed: holding the secret proves it's yours. This is what makes your own
+store writable again on a new machine.
 
 ### keys
 
@@ -127,4 +210,4 @@ built: DATE
 | --- | --- |
 | `0` | Success. |
 | `1` | Usage, validation, decrypt, write, or runtime failure. |
-| `2` | Entry not found or doctor warnings. |
+| `2` | Entry not found, doctor warnings, or a non-writable `access` scope. |

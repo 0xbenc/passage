@@ -17,7 +17,8 @@ func TestCompletionsMentionCommands(t *testing.T) {
 	commands := []string{
 		"list", "show", "copy", "reveal", "totp", "mfa",
 		"pin", "unpin", "clear-recents", "clear-pins", "clear-clipboard",
-		"doctor", "keys", "theme", "version", "help",
+		"insert", "generate", "edit", "rm",
+		"doctor", "access", "trust", "keys", "theme", "version", "help",
 	}
 	for _, file := range files {
 		t.Run(filepath.Base(file), func(t *testing.T) {

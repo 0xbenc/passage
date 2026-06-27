@@ -17,13 +17,25 @@ the same `entry/mfa` convention used by the old script.
 - Full-screen terminal picker with fuzzy filtering, match highlighting, pins,
   recents, and MFA badges. A responsive detail pane appears on wide terminals,
   and `?` opens a grouped key reference.
+- In-picker create/generate/edit/delete and a "trust" action (shifted keys
+  `N`/`G`/`E`/`D`/`T`), with an `RO` badge marking read-only folders. Lowercase
+  always filters, so the shifted keys never get in the way of typing. `I` opens
+  a folder browser to import + trust a directory of public keys; `S` imports
+  your own secret key(s) and sets them up (ultimate trust) on a new machine.
 - Password copy and reveal actions. Passwords are the first line of `pass show`.
+- Create, generate, edit, and remove entries (`insert`/`generate`/`edit`/`rm`),
+  delegating to `pass` and refusing early when a folder is read-only.
 - Live TOTP countdown and a clipboard-armed status pill that auto-clears while
   passage is open; secrets are blanked when the terminal loses focus.
 - Native SHA1 TOTP generation; `oathtool` is no longer required.
 - Old Bash TSV state migration from `bash-zoo/passage` and `bash-zoo/pass-browse`.
 - Scriptable commands with stable JSON envelopes.
 - `doctor` checks for `pass`, `gpg`, clipboard tools, and `.gpg-id` recipient health.
+- `access` reports, per `.gpg-id` scope, whether you can write (encrypt to every
+  recipient) or are effectively read-only — decided by a real probe-encrypt.
+- `trust` makes a read-only scope writable by local-signing its recipients (a
+  Go-native port of bash-zoo's `gpgobble`); `--import-dir` trusts a whole folder
+  of public keys.
 - GoReleaser archives, Linux packages, and Homebrew cask publishing.
 
 ## Install

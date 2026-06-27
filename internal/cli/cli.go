@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/0xbenc/passage/internal/clipboard"
 	"github.com/0xbenc/passage/internal/fsutil"
 	"github.com/0xbenc/passage/internal/gpgdiag"
+	"github.com/0xbenc/passage/internal/gpgtrust"
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/state"
 	"github.com/0xbenc/passage/internal/termstyle"
@@ -37,7 +41,13 @@ Commands:
   clear-recents    Clear MRU timestamps
   clear-pins       Clear all pins
   clear-clipboard  Clear the clipboard
+  insert           Create or overwrite an entry (password from stdin)
+  generate         Generate a random password for a new entry
+  edit             Edit an entry in $EDITOR
+  rm               Remove an entry
   doctor           Check pass, gpg, clipboard, and .gpg-id health
+  access           Report whether you can write (encrypt) per .gpg-id scope
+  trust            Local-sign recipients to make a read-only scope writable
   keys             List local GPG public keys
   theme            Open the theme builder (choose a base palette, tune colors)
   version          Print build version information
@@ -85,6 +95,58 @@ The same builder is reachable from the homepage with Ctrl-O.
                previous one). Roles this app does not use are preserved.
 `
 
+const accessUsage = `Usage:
+  passage access [ENTRY] [--json] [--store-dir PATH]
+
+Reports, per .gpg-id scope, whether you can encrypt to all recipients
+(writable), can only decrypt (read-only), or neither (no access). With an
+ENTRY (or folder path), reports just the scope governing it. Exits 2 when any
+reported scope is not writable.
+`
+
+const insertUsage = `Usage:
+  passage insert ENTRY [--multiline] [--force] [--store-dir PATH]
+
+Reads the secret from stdin (the first line, or the whole stream with
+--multiline) and encrypts it to the entry's recipients. Refuses early if the
+target folder is read-only. Use --force to overwrite an existing entry.
+`
+
+const generateUsage = `Usage:
+  passage generate ENTRY [LENGTH] [--no-symbols] [--no-copy] [--force] [--json] [--store-dir PATH]
+
+Generates a random password for a new entry and copies it to the clipboard
+(unless --no-copy). Refuses early if the target folder is read-only.
+`
+
+const editUsage = `Usage:
+  passage edit ENTRY [--store-dir PATH]
+
+Opens the entry in $EDITOR via pass and re-encrypts it. Refuses early if the
+folder is read-only.
+`
+
+const rmUsage = `Usage:
+  passage rm ENTRY [--recursive] [--yes] [--store-dir PATH]
+`
+
+const trustUsage = `Usage:
+  passage trust [SCOPE] [--full] [--yes] [--json] [--store-dir PATH]
+  passage trust --import-dir DIR [--full] [--yes] [--json] [--store-dir PATH]
+
+Makes a read-only scope writable by local-signing the recipients gpg cannot
+yet encrypt to. SCOPE is an entry path or folder; its nearest .gpg-id governs.
+Default strength is local-sign only (enough for encryption); --full also raises
+ownertrust to full (5), never downgrading existing 5/6.
+
+  --import-dir DIR  Import every public-key file in DIR and trust them all
+                    (gpgobble parity), instead of a store scope's recipients.
+  --yes             Apply without the confirmation prompt.
+  --json            Print the dry-run plan only; never mutates the keyring.
+
+Local-signing your own key may prompt for your passphrase (pinentry).
+`
+
 const keysUsage = `Usage:
   passage keys [--json] [--store-dir PATH]
 `
@@ -94,6 +156,11 @@ const versionUsage = `Usage:
 `
 
 const interactiveActionTimeout = 12 * time.Second
+
+// writeActionTimeout is the deadline for in-program store mutations. It is wider
+// than the read timeout because encryption plus a possible git commit-signing
+// pinentry can outlast 12s.
+const writeActionTimeout = 60 * time.Second
 
 type BuildInfo struct {
 	Version string
@@ -183,8 +250,20 @@ func (r runner) run(args []string) int {
 		return r.runClear(args[1:], "pins")
 	case "clear-clipboard":
 		return r.runClearClipboard(args[1:])
+	case "insert":
+		return r.runInsert(args[1:])
+	case "generate":
+		return r.runGenerate(args[1:])
+	case "edit":
+		return r.runEdit(args[1:])
+	case "rm", "remove":
+		return r.runRm(args[1:])
 	case "doctor":
 		return r.runDoctor(args[1:])
+	case "access":
+		return r.runAccess(args[1:])
+	case "trust":
+		return r.runTrust(args[1:])
 	case "keys":
 		return r.runKeys(args[1:])
 	case "theme":
@@ -214,8 +293,20 @@ func (r runner) runHelp(args []string) int {
 		fmt.Fprint(r.stdout, revealUsage)
 	case "totp", "mfa":
 		fmt.Fprint(r.stdout, totpUsage)
+	case "insert":
+		fmt.Fprint(r.stdout, insertUsage)
+	case "generate":
+		fmt.Fprint(r.stdout, generateUsage)
+	case "edit":
+		fmt.Fprint(r.stdout, editUsage)
+	case "rm", "remove":
+		fmt.Fprint(r.stdout, rmUsage)
 	case "doctor":
 		fmt.Fprint(r.stdout, doctorUsage)
+	case "access":
+		fmt.Fprint(r.stdout, accessUsage)
+	case "trust":
+		fmt.Fprint(r.stdout, trustUsage)
 	case "keys":
 		fmt.Fprint(r.stdout, keysUsage)
 	case "theme":
@@ -280,37 +371,355 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		}
 		themeWarning += warning
 	}
-	_, err = ui.Pick(ctx, rt.entries, ui.PickOptions{
-		Output:      r.stderr,
-		NoColor:     flags.noColor,
-		Theme:       theme,
-		ThemeFile:   flags.themeFile,
-		Title:       "passage",
-		Version:     r.build.Version,
-		StoreRoot:   rt.storeDir,
-		Filter:      filter,
-		MFAOnly:     mfaOnly,
-		NoAltScreen: flags.noAltScreen,
-		Glyphs:      termstyle.ResolveGlyphs(r.env),
-		ClearClipboard: func(clearCtx context.Context) error {
-			_, err := clipboard.Clear(clearCtx)
-			return err
-		},
-		ThemeConfig:  themeConfig,
-		ThemePath:    themePath,
-		ThemeWarning: themeWarning,
-		SaveTheme: func(saveCtx context.Context, result ui.ThemeEditorResult) (ui.ThemeSaveResult, error) {
-			return r.saveThemeConfig(saveCtx, flags, result)
-		},
-		RunAction: func(actionCtx context.Context, req ui.ActionRequest) ui.ActionOutcome {
-			return r.runInteractiveAction(actionCtx, &rt, flags, req)
-		},
-	})
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
+	// Pattern A: the picker runs as its own program; a terminal-grabbing action
+	// (edit / trust) quits returning a request, which we run here with the
+	// program torn down (the real tty restored) before relaunching the picker.
+	selectPath := ""
+	message := ""
+	messageErr := false
+	for {
+		// Snapshot the inputs the async LoadAccess reads, so its goroutine never
+		// races RunAction's in-place mutation of rt. refreshInteractive replaces
+		// rt.entries with a fresh slice rather than mutating this one, so the
+		// snapshot stays valid for this picker session.
+		accessStore := rt.storeDir
+		accessEntries := rt.entries
+		result, err := ui.Pick(ctx, rt.entries, ui.PickOptions{
+			Output:      r.stderr,
+			NoColor:     flags.noColor,
+			Theme:       theme,
+			ThemeFile:   flags.themeFile,
+			Title:       "passage",
+			Version:     r.build.Version,
+			StoreRoot:   rt.storeDir,
+			Filter:      filter,
+			MFAOnly:     mfaOnly,
+			Message:     message,
+			MessageErr:  messageErr,
+			SelectPath:  selectPath,
+			NoAltScreen: flags.noAltScreen,
+			Glyphs:      termstyle.ResolveGlyphs(r.env),
+			ClearClipboard: func(clearCtx context.Context) error {
+				_, err := clipboard.Clear(clearCtx)
+				return err
+			},
+			ThemeConfig:  themeConfig,
+			ThemePath:    themePath,
+			ThemeWarning: themeWarning,
+			SaveTheme: func(saveCtx context.Context, res ui.ThemeEditorResult) (ui.ThemeSaveResult, error) {
+				return r.saveThemeConfig(saveCtx, flags, res)
+			},
+			RunAction: func(actionCtx context.Context, req ui.ActionRequest) ui.ActionOutcome {
+				return r.runInteractiveAction(actionCtx, &rt, flags, req)
+			},
+			LoadAccess: func(loadCtx context.Context) map[string]string {
+				return computeAccess(loadCtx, accessStore, accessEntries)
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		filter = result.Filter
+		mfaOnly = result.MFAOnly
+		message = ""
+		messageErr = false
+		switch result.Action {
+		case ui.ActionEdit:
+			message, messageErr = r.gapEdit(ctx, &rt, result.Entry)
+		case ui.ActionTrust:
+			message, messageErr = r.gapTrust(ctx, &rt, result.Entry)
+		case ui.ActionImport:
+			message, messageErr = r.gapImport(ctx, &rt, flags)
+		case ui.ActionImportSecret:
+			message, messageErr = r.gapImportSecret(ctx, &rt, flags)
+		default:
+			return 0
+		}
+		selectPath = result.Entry.Path
+		if _, refreshErr := r.refreshInteractive(&rt, flags); refreshErr != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", refreshErr)
+			return 1
+		}
 	}
-	return 0
+}
+
+// gapEdit runs `pass edit` ($EDITOR) for the selected entry with the picker torn
+// down, so the editor owns the real terminal. Returns the message (and whether
+// it is an error) to surface on the relaunched picker.
+func (r runner) gapEdit(ctx context.Context, rt *runtimeState, entry passstore.Entry) (string, bool) {
+	if entry.Path == "" {
+		return "", false
+	}
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry.Path); err != nil {
+		return "Cannot edit: " + err.Error(), true
+	}
+	if err := rt.store.Edit(context.Background(), entry.Path); err != nil {
+		return "Edit failed: " + err.Error(), true
+	}
+	return "Edited " + entry.Path + ".", false
+}
+
+// gapTrust runs the trust flow (preview, confirm, local-sign) for the selected
+// entry's scope with the picker torn down, so pinentry can prompt on the real
+// terminal.
+func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.Entry) (string, bool) {
+	if entry.Path == "" {
+		return "", false
+	}
+	passstore.SetupGPGTTY(ctx, r.env)
+	tr := gpgtrust.New(rt.storeDir)
+	tr.Stdin = os.Stdin
+	tr.Stdout = os.Stderr
+	tr.Stderr = os.Stderr
+	plan, err := tr.PlanRecipients(ctx, entry.Path, gpgtrust.Lsign)
+	if err != nil {
+		return "Trust: " + err.Error(), true
+	}
+	if !plan.Actionable() {
+		return defaultString(plan.Scope, "this folder") + " is already writable.", false
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, line := range trustPlanLines(plan) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Apply trust to %d key(s) to make %s writable? [y/N] ", countTrustActions(plan), defaultString(plan.Scope, "this folder"))) {
+		return "Trust cancelled.", false
+	}
+	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
+	if err != nil {
+		return "Trust failed: " + err.Error(), true
+	}
+	signed := 0
+	for _, res := range report.Results {
+		if res.Signed {
+			signed++
+		}
+	}
+	if report.NowWritable {
+		return fmt.Sprintf("Trusted %d key(s); %s is now writable.", signed, defaultString(plan.Scope, "this folder")), false
+	}
+	return fmt.Sprintf("Local-signed %d key(s), but the folder is still not writable.", signed), true
+}
+
+// gapImport runs the directory browser (with the picker torn down) so the user
+// can choose a folder of public keys, then imports + local-signs them all. The
+// browser is re-run per directory as the user navigates, mirroring ssherpa's
+// transfer browser.
+func (r runner) gapImport(ctx context.Context, rt *runtimeState, flags commonFlags) (string, bool) {
+	cwd := importBrowseStart(r.env)
+	for {
+		chosen, ok, err := ui.BrowseDir(ctx, ui.DirBrowseOptions{
+			Output:      r.stderr,
+			NoColor:     flags.noColor,
+			ThemeFile:   flags.themeFile,
+			NoAltScreen: flags.noAltScreen,
+			Title:       "import keys · choose a folder",
+			Location:    cwd,
+			Entries:     dirBrowseEntries(cwd),
+		})
+		if err != nil {
+			return "Import: " + err.Error(), true
+		}
+		if !ok {
+			return "Import cancelled.", false
+		}
+		switch chosen.Kind {
+		case "use":
+			return r.gapImportTrust(ctx, rt, chosen.Path)
+		default: // "up" or "dir"
+			cwd = chosen.Path
+		}
+	}
+}
+
+func (r runner) gapImportTrust(ctx context.Context, rt *runtimeState, dir string) (string, bool) {
+	passstore.SetupGPGTTY(ctx, r.env)
+	tr := gpgtrust.New(rt.storeDir)
+	tr.Stdin = os.Stdin
+	tr.Stdout = os.Stderr
+	tr.Stderr = os.Stderr
+	plan, err := tr.PlanImportDir(ctx, dir, gpgtrust.Lsign)
+	if err != nil {
+		return "Import: " + err.Error(), true
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, line := range trustPlanLines(plan) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Import + trust %d key(s) from %s? [y/N] ", countTrustActions(plan), dir)) {
+		return "Import cancelled.", false
+	}
+	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
+	if err != nil {
+		return "Import failed: " + err.Error(), true
+	}
+	signed := 0
+	for _, res := range report.Results {
+		if res.Signed {
+			signed++
+		}
+	}
+	return fmt.Sprintf("Imported %d key file(s); local-signed %d key(s).", len(report.Imported), signed), false
+}
+
+// gapImportSecret browses to a folder or a single key file and imports your
+// secret key(s), setting ultimate trust on the ones you now hold the secret for
+// (public-only keys are imported but left untrusted — use the public-key import
+// to trust those).
+func (r runner) gapImportSecret(ctx context.Context, rt *runtimeState, flags commonFlags) (string, bool) {
+	cwd := importBrowseStart(r.env)
+	for {
+		chosen, ok, err := ui.BrowseDir(ctx, ui.DirBrowseOptions{
+			Output:      r.stderr,
+			NoColor:     flags.noColor,
+			ThemeFile:   flags.themeFile,
+			NoAltScreen: flags.noAltScreen,
+			Title:       "import secret keys · choose a folder or a file",
+			Location:    cwd,
+			Entries:     dirBrowseEntries(cwd),
+			SelectFiles: true,
+		})
+		if err != nil {
+			return "Import: " + err.Error(), true
+		}
+		if !ok {
+			return "Import cancelled.", false
+		}
+		switch chosen.Kind {
+		case "use":
+			files := keyFilesInDir(cwd)
+			if len(files) == 0 {
+				cwd = chosen.Path
+				continue
+			}
+			return r.applyImportSecret(ctx, rt, files)
+		case "file":
+			return r.applyImportSecret(ctx, rt, []string{chosen.Path})
+		default: // "up" or "dir"
+			cwd = chosen.Path
+		}
+	}
+}
+
+func (r runner) applyImportSecret(ctx context.Context, rt *runtimeState, files []string) (string, bool) {
+	passstore.SetupGPGTTY(ctx, r.env)
+	tr := gpgtrust.New(rt.storeDir)
+	tr.Stdin = os.Stdin
+	tr.Stdout = os.Stderr
+	tr.Stderr = os.Stderr
+	plan, err := tr.PlanImportSecrets(ctx, files)
+	if err != nil {
+		return "Import: " + err.Error(), true
+	}
+	if len(plan.Keys) == 0 {
+		return "No GPG keys found in the selection.", true
+	}
+	if plan.OwnKeyCount() == 0 {
+		return "No secret keys in the selection — use I to import public keys.", true
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, line := range secretImportPlanLines(plan) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Import and ultimate-trust %d of your key(s)? [y/N] ", plan.OwnKeyCount())) {
+		return "Import cancelled.", false
+	}
+	report, err := tr.ApplyImportSecrets(ctx, plan)
+	if err != nil {
+		return "Import failed: " + err.Error(), true
+	}
+	msg := fmt.Sprintf("Imported %d file(s); set up %d of your key(s).", len(report.Imported), len(report.Trusted))
+	if len(report.PublicOnly) > 0 {
+		msg += fmt.Sprintf(" (%d public-only key(s) imported, not trusted.)", len(report.PublicOnly))
+	}
+	return msg, false
+}
+
+func secretImportPlanLines(plan gpgtrust.SecretImportPlan) []string {
+	lines := []string{"keys found:"}
+	for _, k := range plan.Keys {
+		kind := "public key (imported, not trusted)"
+		if k.HasSecret {
+			kind = "secret key → yours (ultimate trust)"
+		}
+		label := defaultString(k.UID, k.Fingerprint)
+		lines = append(lines, fmt.Sprintf("  %s  %s  %s", label, shortFingerprint(k.Fingerprint), kind))
+	}
+	return lines
+}
+
+// keyFilesInDir lists the importable key files directly in dir (non-recursive,
+// skipping dotfiles), for the "use this folder" choice.
+func keyFilesInDir(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, e.Name()))
+	}
+	sort.Strings(files)
+	return files
+}
+
+// importBrowseStart picks the directory the key browser opens in: $PWD, else home.
+func importBrowseStart(env []string) string {
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		return cwd
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	return "."
+}
+
+// dirBrowseEntries lists a directory as browser rows: "use this folder", the
+// parent, then the subdirectories (sorted), mirroring ssherpa's listing.
+func dirBrowseEntries(dir string) []ui.DirEntry {
+	entries := []ui.DirEntry{{Title: "Use this folder", Path: dir, Kind: "use"}}
+	if parent := filepath.Dir(dir); parent != dir {
+		entries = append(entries, ui.DirEntry{Title: "..", Path: parent, Kind: "up"})
+	}
+	children, err := os.ReadDir(dir)
+	if err != nil {
+		return entries
+	}
+	var dirs, files []ui.DirEntry
+	for _, child := range children {
+		if strings.HasPrefix(child.Name(), ".") {
+			continue
+		}
+		if child.IsDir() {
+			dirs = append(dirs, ui.DirEntry{
+				Title: child.Name() + "/",
+				Path:  filepath.Join(dir, child.Name()),
+				Kind:  "dir",
+			})
+		} else {
+			// Files are shown for reassurance (which key files are here) but are
+			// not selectable — you import a folder, not an individual file.
+			files = append(files, ui.DirEntry{
+				Title: child.Name(),
+				Path:  filepath.Join(dir, child.Name()),
+				Kind:  "file",
+			})
+		}
+	}
+	byTitle := func(s []ui.DirEntry) {
+		sort.Slice(s, func(i, j int) bool {
+			return strings.ToLower(s[i].Title) < strings.ToLower(s[j].Title)
+		})
+	}
+	byTitle(dirs)
+	byTitle(files)
+	entries = append(entries, dirs...)
+	return append(entries, files...)
 }
 
 // firstRunGuidance turns the most common first-run failure — no password store
@@ -900,6 +1309,536 @@ func (r runner) runDoctor(args []string) int {
 	return 0
 }
 
+func (r runner) runAccess(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, accessUsage)
+		return 0
+	}
+	if len(rest) > 1 {
+		fmt.Fprintf(r.stderr, "passage: access accepts at most one ENTRY: %s\n", strings.Join(rest, " "))
+		return 1
+	}
+	storeDir, err := r.storeDir(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	ctx := context.Background()
+	checker := gpgdiag.New(storeDir)
+	var report gpgdiag.AccessReport
+	if len(rest) == 1 {
+		scope, err := checker.Access(ctx, rest[0])
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		report = gpgdiag.AccessReport{
+			SchemaVersion: 1,
+			StoreRoot:     storeDir,
+			Entry:         rest[0],
+			Scopes:        []gpgdiag.ScopeReport{scope},
+		}
+		if scope.Verdict != gpgdiag.VerdictWritable {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: %s", scope.Label, scope.Status))
+		}
+	} else {
+		report, err = checker.AccessAll(ctx)
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: %v\n", err)
+			return 1
+		}
+		report.StoreRoot = storeDir
+	}
+	notWritable := false
+	for _, s := range report.Scopes {
+		if s.Verdict != gpgdiag.VerdictWritable {
+			notWritable = true
+		}
+	}
+	if flags.json {
+		if code := writeJSON(r.stdout, report); code != 0 {
+			return code
+		}
+	} else {
+		for _, line := range accessLines(report) {
+			fmt.Fprintln(r.stdout, line)
+		}
+	}
+	if notWritable {
+		return 2
+	}
+	return 0
+}
+
+// computeAccess maps each entry path to its scope's write verdict for the TUI
+// badges. It probes once per distinct .gpg-id scope (resolution is cheap
+// filesystem work; the verdict is the expensive part), so a store with a few
+// scopes costs only a few gpg probes regardless of entry count.
+func computeAccess(ctx context.Context, storeDir string, entries []passstore.Entry) map[string]string {
+	checker := gpgdiag.New(storeDir)
+	byScope := map[string]string{} // gpg-id path -> verdict
+	out := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			break
+		}
+		entryDir := filepath.Dir(filepath.Join(storeDir, filepath.FromSlash(entry.Path)))
+		gpgIDPath, _, ok, err := passstore.ResolveRecipientsFile(storeDir, entryDir)
+		if err != nil || !ok {
+			out[entry.Path] = string(gpgdiag.VerdictUninitialized)
+			continue
+		}
+		verdict, cached := byScope[gpgIDPath]
+		if !cached {
+			scope, err := checker.Access(ctx, entry.Path)
+			if err != nil {
+				continue
+			}
+			verdict = string(scope.Verdict)
+			byScope[gpgIDPath] = verdict
+		}
+		out[entry.Path] = verdict
+	}
+	return out
+}
+
+// preflightWritable refuses a store mutation early when the target folder is not
+// writable, with a message pointing at the fix, rather than letting pass
+// hard-fail mid-encrypt.
+func (r runner) preflightWritable(ctx context.Context, storeDir, entry string) error {
+	scope, err := gpgdiag.New(storeDir).Access(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if scope.Verdict == gpgdiag.VerdictWritable {
+		return nil
+	}
+	return errors.New(readOnlyMessage(scope))
+}
+
+func readOnlyMessage(scope gpgdiag.ScopeReport) string {
+	where := scope.Label
+	if where == "" || where == "default" {
+		where = "this folder"
+	}
+	var blockers []string
+	blockers = append(blockers, scope.Invalid...)
+	blockers = append(blockers, scope.Unusable...)
+	blockers = append(blockers, scope.Missing...)
+	detail := ""
+	if len(blockers) > 0 {
+		detail = " (can't encrypt to " + strings.Join(blockers, ", ") + ")"
+	}
+	switch scope.Verdict {
+	case gpgdiag.VerdictUninitialized:
+		return where + " has no .gpg-id; run `pass init <gpg-id>` first"
+	case gpgdiag.VerdictNoAccess:
+		return where + " is not accessible" + detail + "; you own none of its recipients"
+	default: // read_only
+		hint := ""
+		switch scope.Fixable {
+		case "trust":
+			hint = "; run `passage trust " + scope.Scope + "` to fix"
+		case "import":
+			hint = "; a recipient key is missing — run `passage trust --import-dir DIR`"
+		case "unfixable":
+			hint = "; recipients are expired/revoked and must be renewed"
+		}
+		return where + " is read-only" + detail + hint
+	}
+}
+
+func (r runner) runInsert(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	multiline := consumeBoolFlag(&rest, "--multiline")
+	force := consumeBoolFlag(&rest, "--force")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, insertUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(r.stderr, insertUsage)
+		return 1
+	}
+	entry := rest[0]
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if _, exists := findEntry(rt.entries, entry); exists && !force {
+		fmt.Fprintf(r.stderr, "passage: entry %q exists; pass --force to overwrite\n", entry)
+		return 1
+	}
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	var content []byte
+	if multiline {
+		content, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(r.stderr, "passage: read stdin: %v\n", err)
+			return 1
+		}
+	} else {
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		content = []byte(strings.TrimRight(line, "\r\n"))
+	}
+	if err := rt.store.Insert(ctx, entry, content); err != nil {
+		zero(content)
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	zero(content)
+	if flags.json {
+		return writeJSON(r.stdout, mutateResponse{SchemaVersion: 1, Entry: entry, Action: "insert"})
+	}
+	fmt.Fprintf(r.stderr, "Inserted %s.\n", entry)
+	return 0
+}
+
+func (r runner) runGenerate(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	noSymbols := consumeBoolFlag(&rest, "--no-symbols")
+	force := consumeBoolFlag(&rest, "--force")
+	noCopy := consumeBoolFlag(&rest, "--no-copy")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, generateUsage)
+		return 0
+	}
+	if len(rest) < 1 || len(rest) > 2 {
+		fmt.Fprint(r.stderr, generateUsage)
+		return 1
+	}
+	entry := rest[0]
+	length := 0
+	if len(rest) == 2 {
+		length, err = strconv.Atoi(rest[1])
+		if err != nil || length <= 0 {
+			fmt.Fprintf(r.stderr, "passage: invalid LENGTH %q\n", rest[1])
+			return 1
+		}
+	}
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if _, exists := findEntry(rt.entries, entry); exists && !force {
+		fmt.Fprintf(r.stderr, "passage: entry %q exists; pass --force to overwrite\n", entry)
+		return 1
+	}
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	password, err := rt.store.Generate(ctx, entry, passstore.GenerateOptions{NoSymbols: noSymbols, Length: length})
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	msg := "Generated " + entry
+	if !noCopy {
+		if res, copyErr := clipboard.Copy(ctx, password); copyErr == nil {
+			msg += ", copied to clipboard (" + res.Tool + ")"
+		}
+	}
+	zero(password)
+	if flags.json {
+		return writeJSON(r.stdout, mutateResponse{SchemaVersion: 1, Entry: entry, Action: "generate"})
+	}
+	fmt.Fprintln(r.stderr, msg+".")
+	return 0
+}
+
+func (r runner) runEdit(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, editUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(r.stderr, editUsage)
+		return 1
+	}
+	entry := rest[0]
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	// Background context: $EDITOR is human-paced and must not hit a timeout.
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	if err := r.preflightWritable(ctx, rt.storeDir, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if err := rt.store.Edit(ctx, entry); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(r.stderr, "Edited %s.\n", entry)
+	return 0
+}
+
+func (r runner) runRm(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	recursive := consumeBoolFlag(&rest, "--recursive") || consumeBoolFlag(&rest, "-r")
+	yes := consumeBoolFlag(&rest, "--yes")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, rmUsage)
+		return 0
+	}
+	if len(rest) != 1 {
+		fmt.Fprint(r.stderr, rmUsage)
+		return 1
+	}
+	entry := rest[0]
+	rt, err := r.load(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if _, exists := findEntry(rt.entries, entry); !exists && !recursive {
+		fmt.Fprintf(r.stderr, "passage: entry %q not found\n", entry)
+		return 2
+	}
+	if !yes {
+		prompt := fmt.Sprintf("Remove %s? [y/N] ", entry)
+		if recursive {
+			prompt = fmt.Sprintf("Remove %s and everything under it? [y/N] ", entry)
+		}
+		if !confirm(os.Stdin, r.stderr, prompt) {
+			fmt.Fprintln(r.stderr, "Cancelled.")
+			return 0
+		}
+	}
+	ctx := context.Background()
+	if err := rt.store.Remove(ctx, entry, passstore.RemoveOptions{Recursive: recursive}); err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if flags.json {
+		return writeJSON(r.stdout, mutateResponse{SchemaVersion: 1, Entry: entry, Action: "rm"})
+	}
+	fmt.Fprintf(r.stderr, "Removed %s.\n", entry)
+	return 0
+}
+
+func (r runner) runTrust(args []string) int {
+	flags, rest, err := parseCommon(args)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	full := consumeBoolFlag(&rest, "--full")
+	yes := consumeBoolFlag(&rest, "--yes")
+	importDir, _ := consumeStringFlag(&rest, "--import-dir")
+	if hasHelpFlag(rest) {
+		fmt.Fprint(r.stdout, trustUsage)
+		return 0
+	}
+	if len(rest) > 1 {
+		fmt.Fprintf(r.stderr, "passage: trust accepts at most one SCOPE: %s\n", strings.Join(rest, " "))
+		return 1
+	}
+	storeDir, err := r.storeDir(flags)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	ctx := context.Background()
+	passstore.SetupGPGTTY(ctx, r.env)
+	strength := gpgtrust.Lsign
+	if full {
+		strength = gpgtrust.Full
+	}
+	tr := gpgtrust.New(storeDir)
+	tr.Stdin = os.Stdin
+	// Keep stdout clean for --json; route pinentry/log to stderr.
+	tr.Stdout = r.stderr
+	tr.Stderr = r.stderr
+
+	var plan gpgtrust.Plan
+	if strings.TrimSpace(importDir) != "" {
+		plan, err = tr.PlanImportDir(ctx, importDir, strength)
+	} else {
+		scope := ""
+		if len(rest) == 1 {
+			scope = rest[0]
+		}
+		plan, err = tr.PlanRecipients(ctx, scope, strength)
+	}
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	if flags.json {
+		return writeJSON(r.stdout, plan)
+	}
+	for _, line := range trustPlanLines(plan) {
+		fmt.Fprintln(r.stdout, line)
+	}
+	if !plan.Actionable() {
+		fmt.Fprintln(r.stderr, "Nothing to trust — every recipient is already encryptable or owned.")
+		return 0
+	}
+	if !yes {
+		prompt := fmt.Sprintf("Apply trust to %d key(s)", countTrustActions(plan))
+		if full {
+			prompt += " (with ownertrust=full)"
+		}
+		prompt += "? [y/N] "
+		if !confirm(os.Stdin, r.stderr, prompt) {
+			fmt.Fprintln(r.stderr, "Cancelled.")
+			return 0
+		}
+	}
+	report, err := tr.Apply(ctx, plan, strength, false)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "passage: %v\n", err)
+		return 1
+	}
+	for _, line := range trustApplyLines(report) {
+		fmt.Fprintln(r.stdout, line)
+	}
+	for _, res := range report.Results {
+		if res.Err != "" {
+			return 1
+		}
+	}
+	return 0
+}
+
+// countTrustActions counts the recipients Apply would actually change.
+func countTrustActions(plan gpgtrust.Plan) int {
+	n := 0
+	for _, r := range plan.Recipients {
+		if r.Action == gpgtrust.ActionWouldLsign || r.Action == gpgtrust.ActionWouldOwnTrust {
+			n++
+		}
+	}
+	return n
+}
+
+func trustActionLabel(action gpgtrust.Action, willImport bool) string {
+	switch action {
+	case gpgtrust.ActionWouldLsign:
+		if willImport {
+			return "import + local-sign"
+		}
+		return "local-sign"
+	case gpgtrust.ActionWouldOwnTrust:
+		return "set ultimate trust (your key)"
+	case gpgtrust.ActionAlreadyValid:
+		return "already valid"
+	case gpgtrust.ActionOwnedSkip:
+		return "yours (skip)"
+	case gpgtrust.ActionUnusable:
+		return "expired/revoked — can't fix"
+	case gpgtrust.ActionMissing:
+		return "missing — import needed"
+	default:
+		return string(action)
+	}
+}
+
+func trustPlanLines(plan gpgtrust.Plan) []string {
+	var lines []string
+	if plan.GPGIDPath != "" {
+		lines = append(lines, "scope: "+defaultString(plan.Scope, "(root)"), ".gpg-id: "+plan.GPGIDPath)
+	} else {
+		lines = append(lines, "import dir: "+plan.Scope)
+	}
+	lines = append(lines, "strength: "+plan.Strength, "", "plan:")
+	for _, r := range plan.Recipients {
+		label := defaultString(r.UID, r.Token)
+		fp := shortFingerprint(r.Fingerprint)
+		action := trustActionLabel(r.Action, r.WillImport)
+		if fp != "" {
+			lines = append(lines, fmt.Sprintf("  %s  %s  %s", label, fp, action))
+		} else {
+			lines = append(lines, fmt.Sprintf("  %s  %s", label, action))
+		}
+	}
+	return lines
+}
+
+func trustApplyLines(report gpgtrust.ApplyReport) []string {
+	var lines []string
+	if len(report.Imported) > 0 {
+		lines = append(lines, fmt.Sprintf("imported %d key file(s)", len(report.Imported)))
+	}
+	signed := 0
+	for _, res := range report.Results {
+		switch {
+		case res.Err != "":
+			lines = append(lines, "  FAILED "+shortFingerprint(res.Fingerprint)+": "+res.Err)
+		case res.Signed:
+			signed++
+			lines = append(lines, "  local-signed "+shortFingerprint(res.Fingerprint))
+		case res.TrustSet:
+			lines = append(lines, "  trusted "+shortFingerprint(res.Fingerprint))
+		}
+	}
+	if len(report.OwnerTrustApplied) > 0 {
+		lines = append(lines, fmt.Sprintf("set ownertrust on %d key(s)", len(report.OwnerTrustApplied)))
+	}
+	summary := fmt.Sprintf("Applied trust to %d key(s).", len(report.Results))
+	if report.Scope != "" || report.NowWritable {
+		if report.NowWritable {
+			summary += " Scope is now writable."
+		} else {
+			summary += " Scope is still not writable."
+		}
+	}
+	lines = append(lines, summary)
+	return lines
+}
+
+func shortFingerprint(fp string) string {
+	if len(fp) <= 16 {
+		return fp
+	}
+	return fp[len(fp)-16:]
+}
+
+// confirm reads a single y/N answer. A non-y answer (including EOF) declines.
+func confirm(in io.Reader, out io.Writer, prompt string) bool {
+	fmt.Fprint(out, prompt)
+	reader := bufio.NewReader(in)
+	line, _ := reader.ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
+}
+
 func (r runner) runKeys(args []string) int {
 	flags, rest, err := parseCommon(args)
 	if err != nil {
@@ -988,7 +1927,11 @@ func (r runner) refreshInteractive(rt *runtimeState, flags commonFlags) ([]passs
 }
 
 func (r runner) runInteractiveAction(parent context.Context, rt *runtimeState, flags commonFlags, req ui.ActionRequest) ui.ActionOutcome {
-	ctx, cancel := context.WithTimeout(parent, interactiveActionTimeout)
+	timeout := interactiveActionTimeout
+	if ui.IsWriteAction(req.Action) {
+		timeout = writeActionTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	out := r.runInteractiveActionOnce(ctx, rt, flags, req)
 	if out.Err != nil {
@@ -1054,6 +1997,62 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 			return ui.ActionOutcome{Message: "Pinned " + req.Entry.Path + ".", Entries: entries}
 		}
 		return ui.ActionOutcome{Message: "Unpinned " + req.Entry.Path + ".", Entries: entries}
+	case ui.ActionNew:
+		if _, exists := findEntry(rt.entries, req.NewPath); exists {
+			zero(req.Content)
+			return ui.ActionOutcome{Err: fmt.Errorf("entry %q already exists — edit it with E", req.NewPath)}
+		}
+		if err := r.preflightWritable(ctx, rt.storeDir, req.NewPath); err != nil {
+			zero(req.Content)
+			return ui.ActionOutcome{Err: err}
+		}
+		insertErr := rt.store.Insert(ctx, req.NewPath, req.Content)
+		zero(req.Content)
+		if insertErr != nil {
+			return ui.ActionOutcome{Err: insertErr}
+		}
+		entries, err := r.refreshInteractive(rt, flags)
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		return ui.ActionOutcome{Message: "Created " + req.NewPath + ".", Entries: entries}
+	case ui.ActionGenerate:
+		if _, exists := findEntry(rt.entries, req.NewPath); exists {
+			return ui.ActionOutcome{Err: fmt.Errorf("entry %q already exists — edit it with E", req.NewPath)}
+		}
+		if err := r.preflightWritable(ctx, rt.storeDir, req.NewPath); err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		password, err := rt.store.Generate(ctx, req.NewPath, passstore.GenerateOptions{NoSymbols: req.NoSymbols, Length: req.Length})
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		res, copyErr := clipboard.Copy(ctx, password)
+		zero(password)
+		entries, refreshErr := r.refreshInteractive(rt, flags)
+		if refreshErr != nil {
+			return ui.ActionOutcome{Err: refreshErr}
+		}
+		out := ui.ActionOutcome{Message: "Generated " + req.NewPath + ".", Entries: entries}
+		if copyErr == nil {
+			out.ClipArmed = true
+			out.ClipRemaining = clipboardArmSeconds
+			out.ClipTool = res.Tool
+			out.Message = "Generated " + req.NewPath + " · copied (" + res.Tool + ")."
+		}
+		return out
+	case ui.ActionRemove:
+		if req.Entry.Path == "" {
+			return ui.ActionOutcome{Err: errors.New("no entry selected")}
+		}
+		if err := rt.store.Remove(ctx, req.Entry.Path, passstore.RemoveOptions{}); err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		entries, err := r.refreshInteractive(rt, flags)
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		return ui.ActionOutcome{Message: "Removed " + req.Entry.Path + ".", Entries: entries}
 	case ui.ActionCopy:
 		msg, tool, err := r.copyEntry(ctx, *rt, req.Entry.Path, false)
 		if err != nil {
@@ -1142,6 +2141,12 @@ func interactiveActionVerb(action ui.Action) string {
 		return "pin clear"
 	case ui.ActionClearRecents:
 		return "recent clear"
+	case ui.ActionNew:
+		return "create"
+	case ui.ActionGenerate:
+		return "generate"
+	case ui.ActionRemove:
+		return "remove"
 	case ui.ActionDoctor:
 		return "doctor"
 	case ui.ActionKeys:
@@ -1459,17 +2464,64 @@ func doctorLines(report gpgdiag.DoctorReport) []string {
 		"stores:",
 	}
 	for _, store := range report.Stores {
-		lines = append(lines, fmt.Sprintf("  %s  %s  recipients=%d", store.Label, store.Status, store.RecipientCount))
-		if len(store.Missing) > 0 {
-			lines = append(lines, "    missing: "+strings.Join(store.Missing, ", "))
-		}
-		if len(store.Untrusted) > 0 {
-			lines = append(lines, "    untrusted: "+strings.Join(store.Untrusted, ", "))
-		}
+		lines = append(lines, scopeStatusLines(store)...)
 	}
 	if len(report.Warnings) > 0 {
 		lines = append(lines, "", "warnings:")
 		lines = append(lines, prefixLines(report.Warnings, "  ")...)
+	}
+	return lines
+}
+
+// scopeStatusLines renders one scope's verdict plus the blocking recipients,
+// shared by `doctor` and `access`.
+func scopeStatusLines(scope gpgdiag.ScopeReport) []string {
+	lines := []string{fmt.Sprintf("  %s  %s  recipients=%d", scope.Label, scope.Status, scope.RecipientCount)}
+	if len(scope.Invalid) > 0 {
+		lines = append(lines, "    invalid (local-sign to fix): "+strings.Join(scope.Invalid, ", "))
+	}
+	if len(scope.Unusable) > 0 {
+		lines = append(lines, "    unusable (expired/revoked): "+strings.Join(scope.Unusable, ", "))
+	}
+	if len(scope.Missing) > 0 {
+		lines = append(lines, "    missing (import needed): "+strings.Join(scope.Missing, ", "))
+	}
+	if scope.Fixable != "" {
+		lines = append(lines, "    fix: "+fixableHint(scope.Fixable))
+	}
+	return lines
+}
+
+func fixableHint(kind string) string {
+	switch kind {
+	case "trust":
+		return "passage trust"
+	case "import":
+		return "passage trust --import-dir DIR"
+	case "unfixable":
+		return "recipients are expired/revoked — keys must be renewed"
+	default:
+		return kind
+	}
+}
+
+func accessLines(report gpgdiag.AccessReport) []string {
+	lines := []string{"store: " + report.StoreRoot}
+	if report.Entry != "" {
+		lines = append(lines, "entry: "+report.Entry)
+	}
+	lines = append(lines, "", "scopes:")
+	for _, scope := range report.Scopes {
+		lines = append(lines, scopeStatusLines(scope)...)
+		if len(scope.Owned) > 0 {
+			lines = append(lines, "    owned: "+strings.Join(scope.Owned, ", "))
+		}
+		if len(scope.Encryptable) > 0 {
+			lines = append(lines, "    encryptable: "+strings.Join(scope.Encryptable, ", "))
+		}
+		if scope.GPGIDPath != "" {
+			lines = append(lines, "    .gpg-id: "+scope.GPGIDPath)
+		}
 	}
 	return lines
 }
@@ -1550,4 +2602,10 @@ type totpResponse struct {
 type keysResponse struct {
 	SchemaVersion int                `json:"schema_version"`
 	Keys          []gpgdiag.LocalKey `json:"keys"`
+}
+
+type mutateResponse struct {
+	SchemaVersion int    `json:"schema_version"`
+	Entry         string `json:"entry"`
+	Action        string `json:"action"`
 }

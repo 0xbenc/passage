@@ -113,6 +113,78 @@ func TestPickerPrintableTextFilters(t *testing.T) {
 	}
 }
 
+func TestPickerShiftedKeysTriggerWriteActions(t *testing.T) {
+	cases := []struct {
+		key  string
+		want Action
+	}{
+		{"E", ActionEdit},
+		{"T", ActionTrust},
+		{"D", ActionRemove},
+	}
+	for _, tc := range cases {
+		model := newPickerModel([]passstore.Entry{
+			{Path: "work/github", Display: "work/github"},
+		}, PickOptions{}, termstyle.TerminalTheme())
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: tc.key}))
+		got := updated.(pickerModel)
+		if tc.want == ActionRemove {
+			// Delete opens a confirm rather than acting immediately.
+			if got.confirm == nil || got.confirm.action != ActionRemove {
+				t.Fatalf("key %q did not open a remove confirm: %#v", tc.key, got.confirm)
+			}
+		} else if got.action != tc.want {
+			t.Fatalf("key %q: action = %q, want %q", tc.key, got.action, tc.want)
+		}
+		if got.query != "" {
+			t.Fatalf("key %q leaked into filter: %q", tc.key, got.query)
+		}
+	}
+}
+
+func TestPickerShiftedNGOpenComposer(t *testing.T) {
+	for _, tc := range []struct {
+		key  string
+		mode composerMode
+	}{{"N", composePassword}, {"G", composeGenerate}} {
+		model := newPickerModel([]passstore.Entry{{Path: "x", Display: "x"}}, PickOptions{}, termstyle.TerminalTheme())
+		updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: tc.key}))
+		got := updated.(pickerModel)
+		if got.composer == nil || got.composer.mode != tc.mode {
+			t.Fatalf("key %q did not open composer mode %v: %#v", tc.key, tc.mode, got.composer)
+		}
+	}
+}
+
+func TestPickerLowercaseStillFiltersDespiteActionKeys(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "twitter", Display: "twitter"},
+		{Path: "aws", Display: "aws"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+	// Lowercase "t" must filter (case-insensitive fuzzy), not trigger trust.
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "t"}))
+	got := updated.(pickerModel)
+	if got.action != ActionNone || got.query != "t" {
+		t.Fatalf("lowercase t acted instead of filtering: action=%q query=%q", got.action, got.query)
+	}
+	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "twitter" {
+		t.Fatalf("filtered = %#v, want only twitter", got.filtered)
+	}
+}
+
+func TestPickerSelectPathRestoresCursor(t *testing.T) {
+	entries := []passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+		{Path: "beta", Display: "beta"},
+		{Path: "gamma", Display: "gamma"},
+	}
+	model := newPickerModel(entries, PickOptions{SelectPath: "gamma"}, termstyle.TerminalTheme())
+	got, ok := model.selectedEntry()
+	if !ok || got.Path != "gamma" {
+		t.Fatalf("selected = %q (ok=%v), want gamma", got.Path, ok)
+	}
+}
+
 func TestPickerCommandLettersFilterInsteadOfActing(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "commandletters", Display: "commandletters"},
