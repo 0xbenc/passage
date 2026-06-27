@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -204,7 +205,7 @@ type pickerModel struct {
 	saveTheme      ThemeSaveFunc
 	themeEditor    *themeEditorModel
 	glyphs         termstyle.GlyphSet
-	secretHidden   bool // secret modal blanked because the terminal lost focus
+	secretHidden   bool // revealed secret (modal or composer) blanked because the terminal lost focus
 	help           bool // the ? key reference overlay is open
 	clip           *clipState
 	clearClipboard func(context.Context) error
@@ -354,7 +355,8 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		// Alt-tab away: blank a revealed secret so it is not left on screen
 		// for an unattended terminal. Defense-in-depth atop the countdown.
-		if m.modal != nil && m.modal.secret {
+		// Covers both the reveal modal and a composer secret shown via ^R.
+		if (m.modal != nil && m.modal.secret) || (m.composer != nil && !m.composer.secret.masked) {
 			m.secretHidden = true
 		}
 	case tea.FocusMsg:
@@ -533,6 +535,12 @@ func (m pickerModel) View() tea.View {
 		body = append(body, m.listLines(spec.bodyWidth, theme, spec.listHeight)...)
 	}
 	body = append(body, spec.tail...)
+	// Defensive backstop: never let an oversized overlay push the shell footer or
+	// border off the alt-screen. The composer sizes its candidate window to avoid
+	// this in normal cases; this only bites on a pathologically short terminal.
+	if maxBody := max(1, m.height-pickerShellStructuralLines(spec.footer)); len(body) > maxBody {
+		body = body[:maxBody]
+	}
 	view := tea.NewView(renderWorkflowShell(theme, spec.width, workflowShell{
 		Title:  m.titleLine(),
 		Body:   body,
@@ -557,11 +565,28 @@ func (m pickerModel) overlayActive() bool {
 }
 
 func (m pickerModel) openComposer(mode composerMode) pickerModel {
-	c := newComposer(mode)
+	c := newComposer(mode, m.entryPaths())
 	m.composer = &c
 	m.message = ""
 	m.messageErr = false
 	return m
+}
+
+// entryPaths snapshots the store's entry paths (sorted, unique) to seed the
+// composer's path-completion index. Point-in-time by design: the composer stays
+// a pure state machine and never touches the live store.
+func (m pickerModel) entryPaths() []string {
+	out := make([]string, 0, len(m.entries))
+	seen := make(map[string]struct{}, len(m.entries))
+	for _, e := range m.entries {
+		if _, ok := seen[e.Path]; ok {
+			continue
+		}
+		seen[e.Path] = struct{}{}
+		out = append(out, e.Path)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m pickerModel) updateComposer(msg tea.KeyPressMsg, key string) (pickerModel, tea.Cmd) {
@@ -724,7 +749,10 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 	}
 	if m.composer != nil {
 		tail = append(tail, "")
-		tail = append(tail, m.composerLines(bodyWidth, theme)...)
+		// Height the composer's candidate window so the entry list keeps a floor
+		// and the box can't push the footer off the frame.
+		avail := m.height - pickerShellStructuralLines(footer) - len(header) - len(tail) - composerListFloor
+		tail = append(tail, m.composerLines(bodyWidth, theme, avail)...)
 	}
 	listHeight := max(1, m.height-pickerShellStructuralLines(footer)-len(header)-len(tail))
 	return layoutSpec{
@@ -1527,13 +1555,26 @@ func (m pickerModel) confirmText(action Action) (string, string) {
 	}
 }
 
-func (m pickerModel) composerLines(width int, theme pickerTheme) []string {
-	boxWidth := clamp(width, 54, 100)
-	body := m.composer.render(boxWidth-4, theme)
+func (m pickerModel) composerLines(width int, theme pickerTheme, avail int) []string {
+	// Lower-bound by the available width so the box can never exceed the outer
+	// shell's inner width on a narrow terminal (which would truncate its border).
+	boxWidth := clamp(width, min(54, width), 100)
+	c := *m.composer
+	if m.secretHidden {
+		// Terminal lost focus: re-mask a ^R-revealed secret for rendering only,
+		// without losing the underlying reveal state. Mirrors the modal
+		// blanking and is restored on FocusMsg.
+		c.secret.masked = true
+		c.confirm.masked = true
+	}
+	if c.step == stepPath {
+		c.viewRows = c.pathViewRows(avail)
+	}
+	body := c.render(boxWidth-4, theme)
 	return splitRendered(renderWorkflowShell(theme, boxWidth, workflowShell{
-		Title:  m.composer.title(),
+		Title:  c.title(),
 		Body:   body,
-		Footer: m.composer.footer(),
+		Footer: c.footer(),
 	}))
 }
 

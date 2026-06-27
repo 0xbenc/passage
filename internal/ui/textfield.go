@@ -19,6 +19,23 @@ func (f textField) String() string {
 	return string(f.value)
 }
 
+// displayString returns the field's visible content without a cursor — bullets
+// when masked, plaintext otherwise. Used to show a settled field as context.
+func (f textField) displayString() string {
+	if !f.masked {
+		return string(f.value)
+	}
+	return strings.Repeat("•", len(f.value))
+}
+
+// withValue replaces the buffer with value and puts the cursor at the end. Used
+// by path completion to splice a completed segment into the field.
+func (f textField) withValue(value string) textField {
+	f.value = []rune(value)
+	f.cursor = len(f.value)
+	return f
+}
+
 // update applies one keystroke. key is the normalized key name; text is the
 // printable text (if any).
 func (f textField) update(key, text string) textField {
@@ -68,7 +85,11 @@ func (f textField) render(width int) string {
 		if f.masked {
 			glyphs[i] = "•"
 		} else {
-			glyphs[i] = string(f.value[i])
+			// Completion can splice untrusted store names into the (unmasked)
+			// path field, so neutralize escape/control bytes per rune. Sanitize
+			// strips the ESC/C1 that starts a sequence, leaving inert literals
+			// and one glyph per rune so the cursor split stays aligned.
+			glyphs[i] = termstyle.Sanitize(string(f.value[i]))
 		}
 	}
 	cursor := clamp(f.cursor, 0, len(glyphs))

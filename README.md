@@ -18,8 +18,14 @@ the same `entry/mfa` convention used by the old script.
   recents, and MFA badges. A responsive detail pane appears on wide terminals,
   and `?` opens a grouped key reference.
 - In-picker create/generate/edit/delete and a "trust" action (shifted keys
-  `N`/`G`/`E`/`D`/`T`), with an `RO` badge marking read-only folders. Lowercase
-  always filters, so the shifted keys never get in the way of typing. `I` opens
+  `N`/`G`/`E`/`D`/`T`), with an `RO` badge marking read-only folders. When you
+  enter a new entry's path, `tab` completes folders shell-style and a live list
+  below shows the current folder's existing entries — so you can confirm a
+  folder is really there before adding under it (`tab` to descend, `shift+tab`
+  to go up, `↑/↓` to pick). A typed new secret is entered twice and must match
+  before it is saved; `ctrl+r` toggles between masked dots and plaintext while
+  typing. Lowercase always filters, so the shifted keys never get in the way of
+  typing. `I` opens
   a folder browser to import + trust a directory of public keys; `S` imports
   your own secret key(s) and sets them up (ultimate trust) on a new machine.
 - Password copy and reveal actions. Passwords are the first line of `pass show`.

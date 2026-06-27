@@ -156,6 +156,133 @@ func TestPickerShiftedNGOpenComposer(t *testing.T) {
 	}
 }
 
+// TestComposerEntryPathsIgnoreFilterAndMFA proves the completion index is built
+// from the full store, never the visible (mfa/query-filtered) subset — so a
+// folder you can't currently see is still completable.
+func TestComposerEntryPathsIgnoreFilterAndMFA(t *testing.T) {
+	entries := []passstore.Entry{
+		{Path: "mfa/site", Display: passstore.Display("mfa/site"), HasMFA: true},
+		{Path: "plain/site", Display: passstore.Display("plain/site")},
+	}
+	model := newPickerModel(entries, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 24
+	model.mfaOnly = true // would hide plain/site from the list
+	model.query = "mfa"  // would also exclude plain/site
+	model.applyFilter()
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "N"}))
+	got := updated.(pickerModel)
+	if got.composer == nil {
+		t.Fatal("composer did not open")
+	}
+	if _, ok := got.composer.idx.entries["plain/site"]; !ok {
+		t.Fatalf("completion index must include filtered-out entries, got: %v", got.composer.idx.entries)
+	}
+}
+
+// TestComposerHeightBudgetExtremeShort drives the View defensive clamp on a
+// pathologically short terminal and asserts the outer footer still survives.
+func TestComposerHeightBudgetExtremeShort(t *testing.T) {
+	var entries []passstore.Entry
+	for _, n := range "abcdefghijklmnop" {
+		p := "root/" + string(n)
+		entries = append(entries, passstore.Entry{Path: p, Display: passstore.Display(p)})
+	}
+	model := newPickerModel(entries, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 10
+	var m tea.Model = model
+	send := func(k tea.Key) { u, _ := m.Update(tea.KeyPressMsg(k)); m = u }
+	send(tea.Key{Text: "N"})
+	for _, r := range "root/" {
+		send(tea.Key{Text: string(r)})
+	}
+	out := m.(pickerModel).View().Content
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) > model.height {
+		t.Fatalf("rendered %d lines > height %d:\n%s", len(lines), model.height, termstyle.Strip(out))
+	}
+	if !strings.Contains(termstyle.Strip(out), pickerFooterText()) {
+		t.Fatalf("footer clipped at extreme height:\n%s", termstyle.Strip(out))
+	}
+}
+
+// TestComposerHeightBudgetKeepsFrame opens the composer over a folder with many
+// children on a short terminal and asserts the candidate window shrinks so the
+// outer footer and bottom border are never pushed off-screen.
+func TestComposerHeightBudgetKeepsFrame(t *testing.T) {
+	var entries []passstore.Entry
+	for _, n := range "abcdefghijklmnopqrstuvwxyz" {
+		p := "root/" + string(n)
+		entries = append(entries, passstore.Entry{Path: p, Display: passstore.Display(p)})
+	}
+	model := newPickerModel(entries, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 18
+	var m tea.Model = model
+	send := func(k tea.Key) { u, _ := m.Update(tea.KeyPressMsg(k)); m = u }
+	send(tea.Key{Text: "N"})
+	for _, r := range "root/" {
+		send(tea.Key{Text: string(r)})
+	}
+	out := m.(pickerModel).View().Content
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) > model.height {
+		t.Fatalf("rendered %d lines > height %d:\n%s", len(lines), model.height, termstyle.Strip(out))
+	}
+	stripped := termstyle.Strip(out)
+	if !strings.Contains(stripped, "╰") {
+		t.Fatalf("bottom border clipped off the frame:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, pickerFooterText()) {
+		t.Fatalf("footer clipped off the frame:\n%s", stripped)
+	}
+	// The candidate window had to scroll, so an overflow marker is present.
+	if !strings.Contains(stripped, "more below") {
+		t.Fatalf("expected the candidate window to be windowed:\n%s", stripped)
+	}
+}
+
+// TestComposerRevealedSecretBlankedOnBlur pins the defense-in-depth parity with
+// the reveal modal: a composer secret shown via ^R must be blanked when the
+// terminal loses focus and restored when it regains focus.
+func TestComposerRevealedSecretBlankedOnBlur(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{{Path: "x", Display: "x"}}, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 24
+	var m tea.Model = model
+	send := func(k tea.Key) {
+		u, _ := m.Update(tea.KeyPressMsg(k))
+		m = u
+	}
+	send(tea.Key{Text: "N"}) // open the type-a-secret composer
+	for _, r := range "site" {
+		send(tea.Key{Text: string(r)})
+	}
+	send(tea.Key{Code: tea.KeyEnter}) // -> secret step
+	const secret = "plaintextpw123"
+	for _, r := range secret {
+		send(tea.Key{Text: string(r)})
+	}
+	send(tea.Key{Code: 'r', Mod: tea.ModCtrl}) // reveal
+
+	if shown := termstyle.Strip(m.(pickerModel).View().Content); !strings.Contains(shown, secret) {
+		t.Fatalf("revealed secret should be visible before blur:\n%s", shown)
+	}
+	// Terminal loses focus: the revealed secret must be blanked.
+	blurred, _ := m.Update(tea.BlurMsg{})
+	m = blurred
+	if hidden := termstyle.Strip(m.(pickerModel).View().Content); strings.Contains(hidden, secret) {
+		t.Fatalf("revealed secret leaked on blur:\n%s", hidden)
+	}
+	// Refocus restores the revealed secret.
+	focused, _ := m.Update(tea.FocusMsg{})
+	m = focused
+	if restored := termstyle.Strip(m.(pickerModel).View().Content); !strings.Contains(restored, secret) {
+		t.Fatalf("revealed secret should return on focus:\n%s", restored)
+	}
+}
+
 func TestPickerLowercaseStillFiltersDespiteActionKeys(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "twitter", Display: "twitter"},
