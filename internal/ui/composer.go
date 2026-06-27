@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termnav"
 )
 
 type composerMode int
@@ -57,7 +58,7 @@ type composerModel struct {
 	// candidate (-1 = plain type mode, no selection); notice carries a blocked-
 	// enter / no-match reason so feedback is never silent; viewRows caps the
 	// candidate window from the terminal height (0 = uncapped, for unit tests).
-	idx      pathIndex
+	idx      *termnav.Index
 	selIndex int
 	notice   string
 	viewRows int
@@ -78,7 +79,7 @@ func newComposer(mode composerMode, entryPaths []string) composerModel {
 		secret:   textField{masked: true},
 		confirm:  textField{masked: true},
 		length:   composerDefaultLength,
-		idx:      buildPathIndex(entryPaths),
+		idx:      termnav.BuildIndex(entryPaths),
 		selIndex: -1,
 	}
 }
@@ -160,14 +161,14 @@ func (c composerModel) update(key, text string) composerModel {
 // field edit returns to it and clears the notice so feedback is never stale.
 func (c composerModel) updatePath(key, text string) composerModel {
 	field := c.path.String()
-	dir, frag := splitPath(field)
+	dir, frag := termnav.SplitPath(field)
 	switch key {
 	case "enter":
 		// A highlighted folder descends; anything else validates + submits.
 		if c.selIndex >= 0 {
-			cands := c.idx.completionCandidates(dir, frag)
+			cands := c.idx.Candidates(dir, frag)
 			if c.selIndex < len(cands) {
-				newField, descended := applyNode(dir, cands[c.selIndex].node)
+				newField, descended := termnav.ApplyNode(dir, cands[c.selIndex].Node)
 				c.path = c.path.withValue(newField)
 				c.selIndex = -1
 				c.notice = ""
@@ -181,12 +182,12 @@ func (c composerModel) updatePath(key, text string) composerModel {
 	case "tab":
 		return c.completePath(dir, frag)
 	case "shift+tab":
-		c.path = c.path.withValue(ascendPath(field))
+		c.path = c.path.withValue(termnav.AscendPath(field))
 		c.selIndex = -1
 		c.notice = ""
 		return c
 	case "down":
-		if cands := c.idx.completionCandidates(dir, frag); c.selIndex < len(cands)-1 {
+		if cands := c.idx.Candidates(dir, frag); c.selIndex < len(cands)-1 {
 			c.selIndex++
 		}
 		c.notice = ""
@@ -215,31 +216,31 @@ func (c composerModel) updatePath(key, text string) composerModel {
 // over the current fragment complete to a unique child, or extend to the
 // longest common prefix of the matches without guessing a descent.
 func (c composerModel) completePath(dir, frag string) composerModel {
-	cands := c.idx.completionCandidates(dir, frag)
+	cands := c.idx.Candidates(dir, frag)
 	if c.selIndex >= 0 && c.selIndex < len(cands) {
-		newField, _ := applyNode(dir, cands[c.selIndex].node)
+		newField, _ := termnav.ApplyNode(dir, cands[c.selIndex].Node)
 		c.path = c.path.withValue(newField)
 		c.selIndex = -1
 		c.notice = ""
 		return c
 	}
-	matches := matchingCandidates(cands)
+	matches := termnav.MatchingCandidates(cands)
 	switch len(matches) {
 	case 0:
 		if frag == "" {
-			c.notice = "no entries in " + termstyle.Sanitize(displayDir(dir))
+			c.notice = "no entries in " + termstyle.Sanitize(termnav.DisplayDir(dir))
 		} else {
 			c.notice = "no match — " + strconv.Quote(frag) + " will be a new entry"
 		}
 	case 1:
-		newField, _ := applyNode(dir, matches[0].node)
+		newField, _ := termnav.ApplyNode(dir, matches[0].Node)
 		c.path = c.path.withValue(newField)
 		c.notice = ""
 	default:
 		// Extend to the common prefix when it adds characters or corrects the
 		// fragment's case to the store's canonical spelling; the live list
 		// already shows every match for the next keystroke.
-		if prefix := commonCompletionPrefix(matches); prefix != "" && prefix != frag {
+		if prefix := termnav.CommonPrefix(matches); prefix != "" && prefix != frag {
 			c.path = c.path.withValue(dir + prefix)
 		}
 		c.notice = ""
@@ -252,20 +253,20 @@ func (c composerModel) completePath(dir, frag string) composerModel {
 // sets a notice explaining why it cannot. It mirrors the CLI's exact-match
 // overwrite gate, surfacing a duplicate before any round-trip.
 func (c composerModel) submitPath(field string) composerModel {
-	switch c.idx.classifyLeaf(field) {
-	case leafEmpty:
+	switch c.idx.Classify(field) {
+	case termnav.LeafEmpty:
 		return c // historical silent no-op for an empty path
-	case leafTrailingSlash:
+	case termnav.LeafTrailingSlash:
 		c.notice = "finish the name after the last /"
-	case leafEmptySegment:
+	case termnav.LeafEmptySegment:
 		c.notice = "remove the empty path segment"
-	case leafPathIsFolder:
+	case termnav.LeafIsFolder:
 		c.notice = termstyle.Sanitize(strings.TrimSpace(field)) + " is a folder — add /name"
-	case leafExistingEntry:
+	case termnav.LeafExistingEntry:
 		c.notice = "entry exists — esc, then E to edit"
-	case leafCaseCollision:
-		c.notice = "exists as " + strconv.Quote(c.idx.caseCollisionCanonical(field)) + " (case differs)"
-	default: // leafNew
+	case termnav.LeafCaseCollision:
+		c.notice = "exists as " + strconv.Quote(c.idx.CaseCanonical(field)) + " (case differs)"
+	default: // termnav.LeafNew
 		c.notice = ""
 		if c.mode == composeGenerate {
 			c.step = stepLength
@@ -359,9 +360,9 @@ func (c composerModel) render(width int, theme pickerTheme) []string {
 // notice. width is the box's inner content width.
 func (c composerModel) renderPath(width int, theme pickerTheme) []string {
 	field := c.path.String()
-	dir, frag := splitPath(field)
-	segs, leaf, kind := c.idx.breadcrumbSegments(field)
-	cands := c.idx.completionCandidates(dir, frag)
+	dir, frag := termnav.SplitPath(field)
+	segs, leaf, kind := c.idx.Breadcrumb(field)
+	cands := c.idx.Candidates(dir, frag)
 
 	var lines []string
 	// The breadcrumb earns its line only once a folder is committed — that is
@@ -376,7 +377,7 @@ func (c composerModel) renderPath(width int, theme pickerTheme) []string {
 	} else {
 		lines = append(lines, c.candidateRows(dir, frag, cands, width, theme)...)
 	}
-	if frag != "" && len(matchingCandidates(cands)) == 0 && len(cands) > 0 {
+	if frag != "" && len(termnav.MatchingCandidates(cands)) == 0 && len(cands) > 0 {
 		lines = append(lines, theme.muted("no existing name starts with "+strconv.Quote(frag)+" — enter creates it"))
 	}
 	if c.notice != "" {
@@ -392,8 +393,8 @@ func (c composerModel) renderPath(width int, theme pickerTheme) []string {
 // render is uncapped.
 func (c composerModel) pathViewRows(avail int) int {
 	field := c.path.String()
-	dir, frag := splitPath(field)
-	total := len(c.idx.completionCandidates(dir, frag))
+	dir, frag := termnav.SplitPath(field)
+	total := len(c.idx.Candidates(dir, frag))
 	if total == 0 {
 		return 0
 	}
@@ -422,14 +423,14 @@ func (c composerModel) pathViewRows(avail int) int {
 // rows, so pathViewRows can budget the window without a measuring render.
 func (c composerModel) pathNonCandidateLines() int {
 	field := c.path.String()
-	dir, frag := splitPath(field)
-	segs, _, _ := c.idx.breadcrumbSegments(field)
-	cands := c.idx.completionCandidates(dir, frag)
+	dir, frag := termnav.SplitPath(field)
+	segs, _, _ := c.idx.Breadcrumb(field)
+	cands := c.idx.Candidates(dir, frag)
 	n := 3 // path line + blank spacer + candidate header
 	if len(segs) > 0 {
 		n++ // breadcrumb
 	}
-	if frag != "" && len(cands) > 0 && len(matchingCandidates(cands)) == 0 {
+	if frag != "" && len(cands) > 0 && len(termnav.MatchingCandidates(cands)) == 0 {
 		n++ // "no existing name starts with …" hint
 	}
 	if c.notice != "" {
@@ -443,7 +444,7 @@ func (c composerModel) pathNonCandidateLines() int {
 // when new, warning on an overwrite/folder collision). When the path is too deep
 // for width it tail-truncates with a leading "…" so the active segment — the one
 // you are typing — always stays visible.
-func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind leafKind, width int, theme pickerTheme) string {
+func (c composerModel) breadcrumbLine(segs []termnav.Crumb, leaf string, kind termnav.LeafKind, width int, theme pickerTheme) string {
 	const sep = " / "
 	// Each folder piece carries its trailing separator, so concatenation alone
 	// yields "pp / alter-ego / " (poised inside) or "pp / alter-ego / gmail".
@@ -460,7 +461,7 @@ func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind le
 	if leaf != "" {
 		lf := termstyle.Sanitize(leaf)
 		style := theme.warning
-		if kind == leafNew {
+		if kind == termnav.LeafNew {
 			style = theme.muted
 		}
 		pieces = append(pieces, piece{lf, style(lf)})
@@ -501,7 +502,7 @@ func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind le
 }
 
 // candidateHeaderLine is the "under <dir> ... <count>" line above the list.
-func (c composerModel) candidateHeaderLine(dir, frag string, cands []pathCandidate, width int, theme pickerTheme) string {
+func (c composerModel) candidateHeaderLine(dir, frag string, cands []termnav.Candidate, width int, theme pickerTheme) string {
 	left := "under " + headerDir(termstyle.Sanitize(dir))
 	right := candidateCountLabel(frag, cands)
 	left = termstyle.Truncate(left, max(1, width-termstyle.VisibleWidth(right)-1))
@@ -511,11 +512,11 @@ func (c composerModel) candidateHeaderLine(dir, frag string, cands []pathCandida
 
 // candidateRows renders the (optionally windowed) child list with overflow
 // markers, matches first.
-func (c composerModel) candidateRows(dir, frag string, cands []pathCandidate, width int, theme pickerTheme) []string {
+func (c composerModel) candidateRows(dir, frag string, cands []termnav.Candidate, width int, theme pickerTheme) []string {
 	start, end := c.candidateWindow(len(cands))
 	tagW := 0
 	for i := start; i < end; i++ {
-		tag, _ := c.candidateTag(dir, frag, cands[i].node)
+		tag, _ := c.candidateTag(dir, frag, cands[i].Node)
 		tagW = max(tagW, termstyle.VisibleWidth(tag))
 	}
 	tagW = clamp(tagW, 0, max(0, width-12))
@@ -555,10 +556,10 @@ func (c composerModel) candidateWindow(n int) (start, end int) {
 	return start, end
 }
 
-func (c composerModel) candidateRow(dir, frag string, cand pathCandidate, index, width, tagW int, theme pickerTheme) string {
+func (c composerModel) candidateRow(dir, frag string, cand termnav.Candidate, index, width, tagW int, theme pickerTheme) string {
 	selected := index == c.selIndex
 	caret, glyph := "  ", "· "
-	if cand.node.IsFolder {
+	if cand.Node.IsFolder {
 		glyph = "▸ "
 	}
 	if selected {
@@ -567,22 +568,22 @@ func (c composerModel) candidateRow(dir, frag string, cand pathCandidate, index,
 	prefixW := termstyle.VisibleWidth(caret + glyph)
 	gap := 1
 	nameWidth := max(4, width-prefixW-tagW-gap)
-	displayName := termstyle.Sanitize(cand.node.Name)
-	if cand.node.IsFolder {
+	displayName := termstyle.Sanitize(cand.Node.Name)
+	if cand.Node.IsFolder {
 		displayName += "/"
 	}
 	base, hl := theme.muted, theme.muted
-	if cand.match {
+	if cand.Match {
 		base, hl = theme.primary, theme.search
 	}
 	if selected {
 		base, hl = theme.accent, theme.accent
 	}
-	styledName := highlightTitle(displayName, cand.positions, nameWidth, base, hl)
-	tag, warn := c.candidateTag(dir, frag, cand.node)
+	styledName := highlightTitle(displayName, cand.Positions, nameWidth, base, hl)
+	tag, warn := c.candidateTag(dir, frag, cand.Node)
 	pad := max(1, width-prefixW-termstyle.VisibleWidth(styledName)-termstyle.VisibleWidth(tag))
 	caretStyle, glyphStyle, tagStyle := theme.muted, theme.subtle, theme.muted
-	if cand.node.IsFolder {
+	if cand.Node.IsFolder {
 		glyphStyle = theme.secondary
 	}
 	if selected {
@@ -597,26 +598,26 @@ func (c composerModel) candidateRow(dir, frag string, cand pathCandidate, index,
 // candidateTag is the right-aligned tag for a child row: a folder's item count,
 // "entry", or a warning "exists" when the typed fragment exactly names this
 // entry (an imminent overwrite).
-func (c composerModel) candidateTag(dir, frag string, n pathNode) (text string, warn bool) {
+func (c composerModel) candidateTag(dir, frag string, n termnav.Node) (text string, warn bool) {
 	if n.IsFolder {
-		return plural(len(c.idx.children[childPath(dir, n.Name)]), "item", "items"), false
+		return plural(c.idx.ChildCount(dir, n.Name), "item", "items"), false
 	}
 	// Case-insensitive so the "exists" warning fires for exactly the fragments
-	// the enter-gate blocks (leafExistingEntry and leafCaseCollision).
+	// the enter-gate blocks (termnav.LeafExistingEntry and termnav.LeafCaseCollision).
 	if strings.EqualFold(n.Name, frag) {
 		return "exists", true
 	}
 	return "entry", false
 }
 
-func candidateCountLabel(frag string, cands []pathCandidate) string {
+func candidateCountLabel(frag string, cands []termnav.Candidate) string {
 	if len(cands) == 0 {
 		return "empty"
 	}
 	if frag == "" {
 		return plural(len(cands), "item", "items")
 	}
-	if m := len(matchingCandidates(cands)); m > 0 {
+	if m := len(termnav.MatchingCandidates(cands)); m > 0 {
 		return plural(m, "match", "matches")
 	}
 	return "no match"
