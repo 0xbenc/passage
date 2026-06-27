@@ -46,6 +46,16 @@ type composerModel struct {
 	mismatch  bool
 	done      bool
 	canceled  bool
+
+	// Path-completion state for stepPath. idx is an immutable snapshot of the
+	// store's entry paths (folder-awareness); selIndex is the highlighted
+	// candidate (-1 = plain type mode, no selection); notice carries a blocked-
+	// enter / no-match reason so feedback is never silent; viewRows caps the
+	// candidate window from the terminal height (0 = uncapped, for unit tests).
+	idx      pathIndex
+	selIndex int
+	notice   string
+	viewRows int
 }
 
 type composerResult struct {
@@ -56,13 +66,15 @@ type composerResult struct {
 	NoSymbols bool
 }
 
-func newComposer(mode composerMode) composerModel {
+func newComposer(mode composerMode, entryPaths []string) composerModel {
 	return composerModel{
-		mode:    mode,
-		step:    stepPath,
-		secret:  textField{masked: true},
-		confirm: textField{masked: true},
-		length:  composerDefaultLength,
+		mode:     mode,
+		step:     stepPath,
+		secret:   textField{masked: true},
+		confirm:  textField{masked: true},
+		length:   composerDefaultLength,
+		idx:      buildPathIndex(entryPaths),
+		selIndex: -1,
 	}
 }
 

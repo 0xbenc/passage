@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -558,11 +559,28 @@ func (m pickerModel) overlayActive() bool {
 }
 
 func (m pickerModel) openComposer(mode composerMode) pickerModel {
-	c := newComposer(mode)
+	c := newComposer(mode, m.entryPaths())
 	m.composer = &c
 	m.message = ""
 	m.messageErr = false
 	return m
+}
+
+// entryPaths snapshots the store's entry paths (sorted, unique) to seed the
+// composer's path-completion index. Point-in-time by design: the composer stays
+// a pure state machine and never touches the live store.
+func (m pickerModel) entryPaths() []string {
+	out := make([]string, 0, len(m.entries))
+	seen := make(map[string]struct{}, len(m.entries))
+	for _, e := range m.entries {
+		if _, ok := seen[e.Path]; ok {
+			continue
+		}
+		seen[e.Path] = struct{}{}
+		out = append(out, e.Path)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m pickerModel) updateComposer(msg tea.KeyPressMsg, key string) (pickerModel, tea.Cmd) {

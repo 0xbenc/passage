@@ -46,7 +46,7 @@ func TestTextFieldInsertBackspaceMask(t *testing.T) {
 }
 
 func TestComposerPasswordFlow(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "work/new")
 	c = c.update("enter", "") // advance to secret
 	if c.step != stepSecret {
@@ -69,7 +69,7 @@ func TestComposerPasswordFlow(t *testing.T) {
 }
 
 func TestComposerSecretMustMatch(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "work/new")
 	c = c.update("enter", "")
 	c = typeComposer(c, "s3cret")
@@ -102,7 +102,7 @@ func TestComposerSecretMustMatch(t *testing.T) {
 }
 
 func TestComposerEmptySecretStaysOnStep(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "work/new")
 	c = c.update("enter", "") // -> secret
 	c = c.update("enter", "") // empty secret: must not advance
@@ -112,7 +112,7 @@ func TestComposerEmptySecretStaysOnStep(t *testing.T) {
 }
 
 func TestComposerRevealToggle(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "work/new")
 	c = c.update("enter", "") // -> secret
 	c = typeComposer(c, "abc")
@@ -153,7 +153,7 @@ func TestComposerRevealToggle(t *testing.T) {
 // proves the context line reflects the secret, not the confirm field.
 func TestComposerConfirmRendersSettledSecret(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "work/new")
 	c = c.update("enter", "") // -> secret
 	c = typeComposer(c, "s3cret")
@@ -185,7 +185,7 @@ func TestComposerConfirmRendersSettledSecret(t *testing.T) {
 // composer opened directly in generate mode (the picker's "G" action), so the
 // stepConfirm enum insertion can't reroute it through the typed-secret steps.
 func TestComposerGenerateFromPath(t *testing.T) {
-	c := newComposer(composeGenerate)
+	c := newComposer(composeGenerate, nil)
 	c = typeComposer(c, "work/gen")
 	c = c.update("enter", "") // path -> length, skipping secret/confirm
 	if c.step != stepLength {
@@ -199,7 +199,7 @@ func TestComposerGenerateFromPath(t *testing.T) {
 }
 
 func TestComposerGenerateFlowAndSwitch(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "work/gen")
 	c = c.update("enter", "")  // to secret
 	c = c.update("ctrl+g", "") // switch to generate
@@ -216,7 +216,7 @@ func TestComposerGenerateFlowAndSwitch(t *testing.T) {
 }
 
 func TestComposerCancel(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = typeComposer(c, "x")
 	c = c.update("esc", "")
 	if !c.done || !c.canceled {
@@ -225,7 +225,7 @@ func TestComposerCancel(t *testing.T) {
 }
 
 func TestComposerEmptyPathStaysOnStep(t *testing.T) {
-	c := newComposer(composePassword)
+	c := newComposer(composePassword, nil)
 	c = c.update("enter", "") // no path yet
 	if c.step != stepPath || c.done {
 		t.Fatalf("empty path advanced: step=%v done=%v", c.step, c.done)
