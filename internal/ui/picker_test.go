@@ -175,8 +175,8 @@ func TestComposerEntryPathsIgnoreFilterAndMFA(t *testing.T) {
 	if got.composer == nil {
 		t.Fatal("composer did not open")
 	}
-	if _, ok := got.composer.idx.entries["plain/site"]; !ok {
-		t.Fatalf("completion index must include filtered-out entries, got: %v", got.composer.idx.entries)
+	if !got.composer.idx.HasEntry("plain/site") {
+		t.Fatal("completion index must include filtered-out entries (plain/site)")
 	}
 }
 
