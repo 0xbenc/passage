@@ -4,28 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termnav"
+	"github.com/0xbenc/termnav/source"
+	"github.com/0xbenc/termnav/teax"
 )
 
-// DirEntry is one row in the directory browser: a folder to open, the parent,
-// the "use this folder" choice, or a file shown for reference. Path is the
-// absolute path the choice resolves to; Kind drives the caller's navigation. A
-// "file" row is informational only — it is rendered but the cursor skips it.
-type DirEntry struct {
-	Title string
-	Path  string
-	Kind  string // "use" | "up" | "dir" | "file"
-}
-
-func dirEntrySelectable(kind string) bool {
-	return kind != "file"
-}
-
-type DirBrowseOptions struct {
+// BrowseKeyDirOptions configures the local-filesystem browser the key-import
+// flows use to choose a folder (or, with SelectFiles, a single file).
+type BrowseKeyDirOptions struct {
 	Input       io.Reader
 	Output      io.Writer
 	NoAltScreen bool
@@ -33,313 +25,193 @@ type DirBrowseOptions struct {
 	Theme       termstyle.Theme
 	ThemeFile   string
 	Title       string
-	Location    string
-	Entries     []DirEntry
-	// SelectFiles makes file rows selectable too (Enter returns the file),
-	// instead of reference-only. Used by the secret-key import.
+	Start       string
+	// SelectFiles makes file rows selectable (Enter returns the file) instead of
+	// reference-only. Used by the secret-key import.
 	SelectFiles bool
+	// Validate gates a folder/file commit: ok=false keeps the browser open and
+	// shows notice (e.g. "no key files here"). path is the chosen path, isFile
+	// reports whether a file (vs the current folder) was chosen.
+	Validate func(path string, isFile bool) (ok bool, notice string)
 }
 
-// BrowseDir shows one directory's contents and returns the chosen entry. It is
-// intentionally "dumb" — the caller lists each directory and re-runs BrowseDir
-// as the user navigates (open a folder, go up), mirroring ssherpa's transfer
-// browser. Returns ok=false on cancel.
-func BrowseDir(ctx context.Context, opts DirBrowseOptions) (DirEntry, bool, error) {
+// BrowseKeyDir lets the user navigate the local filesystem to choose a folder
+// (or a file, with SelectFiles) of key material. It is the termnav-backed
+// replacement for the old per-directory re-list loop: navigation, listing, and
+// filtering all happen inside one program, so the program is no longer torn down
+// and rebuilt on every step. It returns the chosen path, whether that path is a
+// file (vs the current folder), and ok=false on cancel.
+func BrowseKeyDir(ctx context.Context, opts BrowseKeyDirOptions) (path string, isFile bool, ok bool, err error) {
 	theme, err := resolveTheme(opts.NoColor, opts.Theme, opts.ThemeFile)
 	if err != nil {
-		return DirEntry{}, false, err
+		return "", false, false, err
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	model := dirBrowseModel{
-		entries:     append([]DirEntry(nil), opts.Entries...),
-		selected:    -1,
-		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),
-		title:       defaultString(opts.Title, "choose a folder"),
-		location:    opts.Location,
-		noAltScreen: opts.NoAltScreen,
-		selectFiles: opts.SelectFiles,
-		width:       90,
-		height:      26,
-	}
-	model.applyFilter()
-	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
-	if opts.Input != nil {
-		programOptions = append(programOptions, tea.WithInput(opts.Input))
-	}
-	if opts.Output != nil {
-		programOptions = append(programOptions, tea.WithOutput(opts.Output))
-	}
-	final, err := tea.NewProgram(model, programOptions...).Run()
-	if err != nil {
-		return DirEntry{}, false, err
-	}
-	browser, ok := final.(dirBrowseModel)
-	if !ok || browser.canceled || browser.selected < 0 || browser.selected >= len(browser.filtered) {
-		return DirEntry{}, false, nil
-	}
-	return browser.entries[browser.filtered[browser.selected]], true, nil
-}
+	theme = theme.WithNoColor(theme.NoColor || opts.NoColor)
 
-type dirBrowseModel struct {
-	entries     []DirEntry
-	filtered    []int
-	cursor      int
-	scroll      int
-	query       string
-	selected    int
-	canceled    bool
-	theme       termstyle.Theme
-	title       string
-	location    string
-	noAltScreen bool
-	selectFiles bool
-	width       int
-	height      int
-}
+	src := source.NewLocal(source.LocalOptions{
+		SkipHidden:  true,
+		UseRow:      true,
+		UseTitle:    "Use this folder",
+		SelectFiles: opts.SelectFiles,
+		DirSuffix:   "/",
+		// Kind literals preserved for any downstream consumer; the renderer keys
+		// color off NavIntent, never these.
+		UseKind: "use", UpKind: "up", DirKind: "dir", FileKind: "file",
+		UseBadge: "use", UpBadge: "up", DirBadge: "dir", FileBadge: "file",
+	})
 
-func (m dirBrowseModel) Init() tea.Cmd {
-	return tea.RequestWindowSize
-}
-
-func (m dirBrowseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		if msg.Width > 0 {
-			m.width = msg.Width
-		}
-		if msg.Height > 0 {
-			m.height = msg.Height
-		}
-		m.ensureVisible()
-	case tea.KeyPressMsg:
-		key := normalizedKey(msg)
-		switch key {
-		case "ctrl+c", "esc", "ctrl+q":
-			m.canceled = true
-			return m, tea.Quit
-		case "enter":
-			// Files are reference-only; Enter selects only a folder choice.
-			if m.isSelectable(m.cursor) {
-				m.selected = m.cursor
-				return m, tea.Quit
-			}
-		case "up", "ctrl+p":
-			m.move(-1)
-		case "down", "ctrl+n":
-			m.move(1)
-		case "pgup":
-			m.move(-m.pageSize())
-		case "pgdown":
-			m.move(m.pageSize())
-		case "home":
-			if s := m.snap(0, 1); s >= 0 {
-				m.cursor = s
-			}
-			m.ensureVisible()
-		case "end":
-			if s := m.snap(len(m.filtered)-1, -1); s >= 0 {
-				m.cursor = s
-			}
-			m.ensureVisible()
-		case "backspace":
-			if m.query != "" {
-				m.query = m.query[:len(m.query)-1]
-				m.applyFilter()
-			}
-		case "left", "right":
-			// ignore horizontal arrows
-		default:
-			if safeTextInput(msg.Text) && !isControlKey(key) {
-				m.query += msg.Text
-				m.applyFilter()
-			}
+	var validate termnav.Validator
+	if opts.Validate != nil {
+		validate = func(r termnav.Row) (bool, string) {
+			return opts.Validate(r.Token, r.Intent == termnav.IntentSelectLeaf)
 		}
 	}
-	return m, nil
+
+	navOpts := termnav.Options{
+		Matcher:     termnav.Substring{}, // the directory browser filters by plain Contains
+		MatchText:   func(r termnav.Row) string { return r.Title },
+		ReserveRows: 8, // shell(2) + footer(2) + location/filter/blank(3) + safety(1)
+		Validate:    validate,
+	}
+
+	title := defaultString(opts.Title, "choose a folder")
+	render := func(m termnav.Model) tea.View {
+		v := tea.NewView(renderDirBrowse(m, pickerTheme{theme: theme}, title, opts.SelectFiles))
+		v.AltScreen = !opts.NoAltScreen
+		return v
+	}
+	input := opts.Input
+	if input == nil {
+		input = os.Stdin
+	}
+
+	out, committed, err := teax.Run(ctx, teax.Config{
+		Source: src,
+		Start:  opts.Start,
+		Render: render,
+	}, navOpts, teax.ProgramIO{Input: input, Output: opts.Output})
+	if err != nil || !committed {
+		return "", false, committed, err
+	}
+	return out.Token(), out.Intent == termnav.IntentSelectLeaf, true, nil
 }
 
-func (m dirBrowseModel) View() tea.View {
-	width := max(48, m.width)
-	theme := pickerTheme{theme: m.theme}
-	body := []string{m.locationLine(width-4, theme), m.filterLine(width-4, theme), ""}
-	body = append(body, m.listLines(width-4, theme)...)
+// renderDirBrowse paints the directory browser frame from a termnav model,
+// preserving passage's look: a location line, a filter line, then the windowed
+// list with reference-dimmed file rows.
+func renderDirBrowse(m termnav.Model, theme pickerTheme, title string, selectFiles bool) string {
+	width := max(48, m.Width())
+	inner := width - 4
+	body := []string{dirBrowseLocationLine(m.Cwd(), inner, theme), dirBrowseFilterLine(m, inner, theme), ""}
+	body = append(body, dirBrowseListLines(m, inner, theme, selectFiles)...)
 	footer := "enter open/use folder   files shown for reference   type filter   esc cancel"
-	if m.selectFiles {
+	if selectFiles {
 		footer = "enter open folder / use folder / select file   type filter   esc cancel"
 	}
-	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
-		Title:  strings.ToUpper(m.title),
+	return renderWorkflowShell(theme, width, workflowShell{
+		Title:  strings.ToUpper(title),
 		Body:   body,
 		Footer: footer,
-	}))
-	view.AltScreen = !m.noAltScreen
-	return view
+	})
 }
 
-func (m dirBrowseModel) locationLine(width int, theme pickerTheme) string {
-	loc := m.location
+func dirBrowseLocationLine(loc string, width int, theme pickerTheme) string {
 	if loc == "" {
 		loc = "."
 	}
 	return theme.muted(termstyle.Truncate("folder  "+termstyle.Sanitize(loc), width))
 }
 
-func (m dirBrowseModel) filterLine(width int, theme pickerTheme) string {
-	query := termstyle.Sanitize(m.query)
-	if m.query == "" {
-		query = "type to filter"
-	}
-	counter := theme.counter(len(m.filtered), len(m.entries))
+func dirBrowseFilterLine(m termnav.Model, width int, theme pickerTheme) string {
+	query := termstyle.Sanitize(m.Query())
 	field := "/" + query
-	if m.query == "" {
-		field = theme.muted(field)
+	if m.Query() == "" {
+		field = theme.muted("/type to filter")
 	} else {
 		field = theme.primary(field)
 	}
-	return field + "  " + counter
+	return field + "  " + theme.counter(len(m.Filtered()), len(m.Rows()))
 }
 
-func (m dirBrowseModel) listLines(width int, theme pickerTheme) []string {
-	if len(m.filtered) == 0 {
+func dirBrowseListLines(m termnav.Model, width int, theme pickerTheme, selectFiles bool) []string {
+	filtered := m.Filtered()
+	rows := m.Rows()
+	if len(filtered) == 0 {
 		return []string{theme.warning("No matching folders.")}
 	}
-	available := max(1, m.pageSize())
-	start := clamp(m.scroll, 0, max(0, len(m.filtered)-available))
-	slots := available
-	if start > 0 && slots > 1 {
-		slots--
-	}
-	end := min(len(m.filtered), start+slots)
-	if end < len(m.filtered) && slots > 1 {
-		slots--
-		end = min(len(m.filtered), start+slots)
+	budget := max(1, m.Budget())
+	start := m.Scroll()
+	if start < 0 {
+		start = 0
 	}
 	var lines []string
+	used := 0
 	if start > 0 {
 		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more above", start)))
+		used++
 	}
-	for i := start; i < end; i++ {
-		lines = append(lines, dirBrowseRow(m.entries[m.filtered[i]], i == m.cursor, m.selectFiles, width, theme))
+	i := start
+	for ; i < len(filtered); i++ {
+		reserve := 0
+		if len(filtered)-i-1 > 0 {
+			reserve = 1
+		}
+		if used+1+reserve > budget {
+			break
+		}
+		idx := filtered[i]
+		if idx >= 0 && idx < len(rows) {
+			lines = append(lines, dirBrowseRow(rows[idx], i == m.Cursor(), selectFiles, width, theme))
+		}
+		used++
 	}
-	if end < len(m.filtered) {
-		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more below", len(m.filtered)-end)))
+	if i < len(filtered) {
+		lines = append(lines, theme.muted(fmt.Sprintf("  ... %d more below", len(filtered)-i)))
 	}
 	return lines
 }
 
-func dirBrowseRow(entry DirEntry, selected, filesSelectable bool, width int, theme pickerTheme) string {
+func dirBrowseRow(row termnav.Row, selected, filesSelectable bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
 		cursor = "> "
 	}
-	badge := "[" + strings.ToUpper(entry.Kind) + "]"
-	line := cursor + termstyle.PadRight(badge, 6) + " " + termstyle.Sanitize(entry.Title)
+	badge := "[" + strings.ToUpper(badgeFor(row)) + "]"
+	line := cursor + termstyle.PadRight(badge, 6) + " " + termstyle.Sanitize(row.Title)
 	line = termstyle.Truncate(line, width)
 	switch {
 	case selected:
 		return theme.selected(termstyle.PadRight(line, width))
-	case entry.Kind == "use":
+	case row.Intent == termnav.IntentUseContainer:
 		return theme.accent(line)
-	case entry.Kind == "file":
+	case row.Intent == termnav.IntentReference:
+		return theme.subtle(line) // reference-only, dimmed
+	case row.Intent == termnav.IntentSelectLeaf:
 		if filesSelectable {
 			return theme.primary(line)
 		}
-		return theme.subtle(line) // reference-only, dimmed
-	case entry.Kind == "up":
+		return theme.subtle(line)
+	case row.Intent == termnav.IntentAscend:
 		return theme.muted(line)
 	default:
 		return theme.primary(line)
 	}
 }
 
-func (m dirBrowseModel) pageSize() int {
-	// shell chrome (2) + footer (2) + location/filter/blank (3) + safety (1)
-	return max(1, m.height-8)
-}
-
-// isSelectable reports whether the cursor may rest on (and Enter may choose) the
-// row at a filtered index — true for folder choices, false for file rows.
-func (m dirBrowseModel) isSelectable(filteredIdx int) bool {
-	if filteredIdx < 0 || filteredIdx >= len(m.filtered) {
-		return false
+// badgeFor names a row's badge for display: the app-supplied badge, else a label
+// derived from the canonical intent.
+func badgeFor(row termnav.Row) string {
+	if row.Badge != "" {
+		return row.Badge
 	}
-	kind := m.entries[m.filtered[filteredIdx]].Kind
-	if kind == "file" {
-		return m.selectFiles
-	}
-	return dirEntrySelectable(kind)
-}
-
-// snap returns a selectable filtered index for the cursor: it searches from idx
-// in the travel direction first, then falls back the other way; -1 if no row is
-// selectable. Searching the travel direction fully keeps the cursor moving past
-// a run of file rows toward the next folder instead of snapping back.
-func (m dirBrowseModel) snap(idx, dir int) int {
-	n := len(m.filtered)
-	if n == 0 {
-		return -1
-	}
-	idx = clamp(idx, 0, n-1)
-	for i := idx; i >= 0 && i < n; i += dir {
-		if m.isSelectable(i) {
-			return i
-		}
-	}
-	for i := idx; i >= 0 && i < n; i -= dir {
-		if m.isSelectable(i) {
-			return i
-		}
-	}
-	return -1
-}
-
-func (m *dirBrowseModel) applyFilter() {
-	q := strings.ToLower(strings.TrimSpace(m.query))
-	m.filtered = m.filtered[:0]
-	for i, entry := range m.entries {
-		if q == "" || strings.Contains(strings.ToLower(entry.Title), q) {
-			m.filtered = append(m.filtered, i)
-		}
-	}
-	if s := m.snap(0, 1); s >= 0 {
-		m.cursor = s
-	} else {
-		m.cursor = 0
-	}
-	m.ensureVisible()
-}
-
-func (m *dirBrowseModel) move(delta int) {
-	if len(m.filtered) == 0 || delta == 0 {
-		return
-	}
-	dir := 1
-	if delta < 0 {
-		dir = -1
-	}
-	// Land on the nearest selectable row in the direction of travel, so the
-	// cursor steps over reference-only file rows.
-	if s := m.snap(m.cursor+delta, dir); s >= 0 {
-		m.cursor = s
-	}
-	m.ensureVisible()
-}
-
-func (m *dirBrowseModel) ensureVisible() {
-	if len(m.filtered) == 0 {
-		m.scroll = 0
-		return
-	}
-	page := m.pageSize()
-	if m.cursor < m.scroll {
-		m.scroll = m.cursor
-	}
-	if m.cursor >= m.scroll+page {
-		m.scroll = m.cursor - page + 1
-	}
-	if m.scroll < 0 {
-		m.scroll = 0
+	switch row.Intent {
+	case termnav.IntentUseContainer:
+		return "use"
+	case termnav.IntentAscend:
+		return "up"
+	case termnav.IntentDescend:
+		return "dir"
+	default:
+		return "file"
 	}
 }

@@ -508,30 +508,22 @@ func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.
 // browser is re-run per directory as the user navigates, mirroring ssherpa's
 // transfer browser.
 func (r runner) gapImport(ctx context.Context, rt *runtimeState, flags commonFlags) (string, bool) {
-	cwd := importBrowseStart(r.env)
-	for {
-		chosen, ok, err := ui.BrowseDir(ctx, ui.DirBrowseOptions{
-			Output:      r.stderr,
-			NoColor:     flags.noColor,
-			ThemeFile:   flags.themeFile,
-			NoAltScreen: flags.noAltScreen,
-			Title:       "import keys · choose a folder",
-			Location:    cwd,
-			Entries:     dirBrowseEntries(cwd),
-		})
-		if err != nil {
-			return "Import: " + err.Error(), true
-		}
-		if !ok {
-			return "Import cancelled.", false
-		}
-		switch chosen.Kind {
-		case "use":
-			return r.gapImportTrust(ctx, rt, chosen.Path)
-		default: // "up" or "dir"
-			cwd = chosen.Path
-		}
+	folder, _, ok, err := ui.BrowseKeyDir(ctx, ui.BrowseKeyDirOptions{
+		Input:       os.Stdin,
+		Output:      r.stderr,
+		NoColor:     flags.noColor,
+		ThemeFile:   flags.themeFile,
+		NoAltScreen: flags.noAltScreen,
+		Title:       "import keys · choose a folder",
+		Start:       importBrowseStart(r.env),
+	})
+	if err != nil {
+		return "Import: " + err.Error(), true
 	}
+	if !ok {
+		return "Import cancelled.", false
+	}
+	return r.gapImportTrust(ctx, rt, folder)
 }
 
 func (r runner) gapImportTrust(ctx context.Context, rt *runtimeState, dir string) (string, bool) {
@@ -569,38 +561,35 @@ func (r runner) gapImportTrust(ctx context.Context, rt *runtimeState, dir string
 // (public-only keys are imported but left untrusted — use the public-key import
 // to trust those).
 func (r runner) gapImportSecret(ctx context.Context, rt *runtimeState, flags commonFlags) (string, bool) {
-	cwd := importBrowseStart(r.env)
-	for {
-		chosen, ok, err := ui.BrowseDir(ctx, ui.DirBrowseOptions{
-			Output:      r.stderr,
-			NoColor:     flags.noColor,
-			ThemeFile:   flags.themeFile,
-			NoAltScreen: flags.noAltScreen,
-			Title:       "import secret keys · choose a folder or a file",
-			Location:    cwd,
-			Entries:     dirBrowseEntries(cwd),
-			SelectFiles: true,
-		})
-		if err != nil {
-			return "Import: " + err.Error(), true
-		}
-		if !ok {
-			return "Import cancelled.", false
-		}
-		switch chosen.Kind {
-		case "use":
-			files := keyFilesInDir(cwd)
-			if len(files) == 0 {
-				cwd = chosen.Path
-				continue
+	chosen, isFile, ok, err := ui.BrowseKeyDir(ctx, ui.BrowseKeyDirOptions{
+		Input:       os.Stdin,
+		Output:      r.stderr,
+		NoColor:     flags.noColor,
+		ThemeFile:   flags.themeFile,
+		NoAltScreen: flags.noAltScreen,
+		Title:       "import secret keys · choose a folder or a file",
+		Start:       importBrowseStart(r.env),
+		SelectFiles: true,
+		// "Use this folder" only commits when the folder actually holds key
+		// files; otherwise the browser stays open with a notice (preserving the
+		// old loop's silent "keep looking" on an empty folder, now explained).
+		Validate: func(path string, isFile bool) (bool, string) {
+			if !isFile && len(keyFilesInDir(path)) == 0 {
+				return false, "no key files in this folder — keep looking"
 			}
-			return r.applyImportSecret(ctx, rt, files)
-		case "file":
-			return r.applyImportSecret(ctx, rt, []string{chosen.Path})
-		default: // "up" or "dir"
-			cwd = chosen.Path
-		}
+			return true, ""
+		},
+	})
+	if err != nil {
+		return "Import: " + err.Error(), true
 	}
+	if !ok {
+		return "Import cancelled.", false
+	}
+	if isFile {
+		return r.applyImportSecret(ctx, rt, []string{chosen})
+	}
+	return r.applyImportSecret(ctx, rt, keyFilesInDir(chosen))
 }
 
 func (r runner) applyImportSecret(ctx context.Context, rt *runtimeState, files []string) (string, bool) {
@@ -677,49 +666,6 @@ func importBrowseStart(env []string) string {
 		return home
 	}
 	return "."
-}
-
-// dirBrowseEntries lists a directory as browser rows: "use this folder", the
-// parent, then the subdirectories (sorted), mirroring ssherpa's listing.
-func dirBrowseEntries(dir string) []ui.DirEntry {
-	entries := []ui.DirEntry{{Title: "Use this folder", Path: dir, Kind: "use"}}
-	if parent := filepath.Dir(dir); parent != dir {
-		entries = append(entries, ui.DirEntry{Title: "..", Path: parent, Kind: "up"})
-	}
-	children, err := os.ReadDir(dir)
-	if err != nil {
-		return entries
-	}
-	var dirs, files []ui.DirEntry
-	for _, child := range children {
-		if strings.HasPrefix(child.Name(), ".") {
-			continue
-		}
-		if child.IsDir() {
-			dirs = append(dirs, ui.DirEntry{
-				Title: child.Name() + "/",
-				Path:  filepath.Join(dir, child.Name()),
-				Kind:  "dir",
-			})
-		} else {
-			// Files are shown for reassurance (which key files are here) but are
-			// not selectable — you import a folder, not an individual file.
-			files = append(files, ui.DirEntry{
-				Title: child.Name(),
-				Path:  filepath.Join(dir, child.Name()),
-				Kind:  "file",
-			})
-		}
-	}
-	byTitle := func(s []ui.DirEntry) {
-		sort.Slice(s, func(i, j int) bool {
-			return strings.ToLower(s[i].Title) < strings.ToLower(s[j].Title)
-		})
-	}
-	byTitle(dirs)
-	byTitle(files)
-	entries = append(entries, dirs...)
-	return append(entries, files...)
 }
 
 // firstRunGuidance turns the most common first-run failure — no password store
