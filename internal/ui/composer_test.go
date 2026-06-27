@@ -352,6 +352,105 @@ func TestComposerPathEnterBlocksCaseCollision(t *testing.T) {
 	}
 }
 
+// --- stepPath rendering ---
+
+func renderPathStrip(c composerModel) string {
+	return termstyle.Strip(strings.Join(c.render(56, pickerTheme{theme: termstyle.TerminalTheme()}), "\n"))
+}
+
+func TestComposerPathRenderRootChildren(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	out := renderPathStrip(c)
+	for _, want := range []string{"under /", "pp/", "work/", "items"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("root render missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestComposerPathRenderBreadcrumbAfterDescend(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "pp/alter-ego/")
+	out := renderPathStrip(c)
+	if !strings.Contains(out, "in    pp / alter-ego /") {
+		t.Fatalf("breadcrumb missing:\n%s", out)
+	}
+	if !strings.Contains(out, "proton") {
+		t.Fatalf("folder children missing:\n%s", out)
+	}
+	// No breadcrumb at the root (nothing committed yet).
+	if strings.Contains(renderPathStrip(newComposer(composePassword, fixturePaths)), "in    ") {
+		t.Fatalf("breadcrumb should be hidden before any folder is committed")
+	}
+}
+
+func TestComposerPathRenderOverwrite(t *testing.T) {
+	c := newComposer(composePassword, []string{"work/aws/db", "work/github"})
+	c = typeComposer(c, "work/github")
+	c = c.update("enter", "")
+	out := renderPathStrip(c)
+	if !strings.Contains(out, "exists") {
+		t.Fatalf("overwrite row tag missing:\n%s", out)
+	}
+	if !strings.Contains(out, "esc, then E to edit") {
+		t.Fatalf("overwrite notice missing:\n%s", out)
+	}
+}
+
+func TestComposerPathRenderNoMatchHint(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "pp/zzz")
+	out := renderPathStrip(c)
+	if !strings.Contains(out, "no existing name starts with") {
+		t.Fatalf("no-match hint missing:\n%s", out)
+	}
+	// The folder's real children still show as dimmed context.
+	if !strings.Contains(out, "alter-ego") || !strings.Contains(out, "backup") {
+		t.Fatalf("dimmed context children missing:\n%s", out)
+	}
+}
+
+func TestComposerPathRenderSelectionCaret(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	out := renderPathStrip(c.update("down", ""))
+	if !strings.Contains(out, "> ") {
+		t.Fatalf("selection caret missing:\n%s", out)
+	}
+}
+
+func TestComposerPathRenderEmptyStore(t *testing.T) {
+	c := newComposer(composePassword, nil)
+	c = typeComposer(c, "newthing")
+	out := renderPathStrip(c)
+	if !strings.Contains(out, "empty") {
+		t.Fatalf("empty-store render should note emptiness:\n%s", out)
+	}
+}
+
+func TestComposerPathRenderSanitizesNames(t *testing.T) {
+	// A hostile entry name must not reach the terminal raw (BEL would ring it).
+	c := newComposer(composePassword, []string{"danger/ev\x07il"})
+	c = typeComposer(c, "danger/")
+	raw := strings.Join(c.render(56, pickerTheme{theme: termstyle.TerminalTheme()}), "\n")
+	if strings.ContainsRune(raw, '\x07') {
+		t.Fatalf("BEL control char leaked into render")
+	}
+}
+
+func TestComposerPathRenderViewRowsWindow(t *testing.T) {
+	paths := make([]string, 0, 12)
+	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"} {
+		paths = append(paths, "root/"+n)
+	}
+	c := newComposer(composePassword, paths)
+	c = typeComposer(c, "root/")
+	c.viewRows = 4 // cap the candidate window
+	out := renderPathStrip(c)
+	if !strings.Contains(out, "more below") {
+		t.Fatalf("windowed list should show an overflow marker:\n%s", out)
+	}
+}
+
 func TestPickerRendersReadOnlyBadge(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "work/aws/db", Display: passstore.Display("work/aws/db")},

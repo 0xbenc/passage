@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -288,7 +289,11 @@ func (c composerModel) title() string {
 func (c composerModel) footer() string {
 	switch c.step {
 	case stepPath:
-		return "enter next  ^G generate  esc cancel"
+		// Surface the selection mode so "enter" is never a hidden overload.
+		if c.selIndex >= 0 {
+			return "tab/enter pick  ↑↓ move  ^G gen  esc cancel"
+		}
+		return "tab complete  ↑↓ pick  enter next  ^G gen  esc cancel"
 	case stepSecret:
 		return "enter next  ^R " + c.revealLabel() + "  ^G generate  esc cancel"
 	case stepConfirm:
@@ -318,7 +323,7 @@ func (c composerModel) render(width int, theme pickerTheme) []string {
 	lines := []string{pathLine}
 	switch c.step {
 	case stepPath:
-		// nothing else yet
+		lines = append(lines, c.renderPath(width, theme)...)
 	case stepSecret:
 		lines = append(lines, theme.primary("secret   "+c.secret.render(fieldWidth)))
 		if c.mismatch {
@@ -340,4 +345,194 @@ func (c composerModel) render(width int, theme pickerTheme) []string {
 		lines = append(lines, theme.muted("symbols  "+symbols))
 	}
 	return lines
+}
+
+// renderPath renders the stepPath body below the input line: a read-only
+// breadcrumb that colors existing folders (the "confirm it's really there"
+// payoff), then the current folder's children — matches bright and
+// prefix-highlighted, non-matches dimmed as context — and any blocked-enter
+// notice. width is the box's inner content width.
+func (c composerModel) renderPath(width int, theme pickerTheme) []string {
+	field := c.path.String()
+	dir, frag := splitPath(field)
+	segs, leaf, kind := c.idx.breadcrumbSegments(field)
+	cands := c.idx.completionCandidates(dir, frag)
+
+	var lines []string
+	// The breadcrumb earns its line only once a folder is committed — that is
+	// exactly when "confirm the folder exists" matters.
+	if len(segs) > 0 {
+		lines = append(lines, c.breadcrumbLine(segs, leaf, kind, theme))
+	}
+	lines = append(lines, "")
+	lines = append(lines, c.candidateHeaderLine(dir, frag, cands, width, theme))
+	if len(cands) == 0 {
+		lines = append(lines, theme.muted("  (empty — type a name, then enter to create it)"))
+	} else {
+		lines = append(lines, c.candidateRows(dir, frag, cands, width, theme)...)
+	}
+	if frag != "" && len(matchingCandidates(cands)) == 0 && len(cands) > 0 {
+		lines = append(lines, theme.muted("no existing name starts with "+strconv.Quote(frag)+" — enter creates it"))
+	}
+	if c.notice != "" {
+		lines = append(lines, theme.warning(c.notice))
+	}
+	return lines
+}
+
+// breadcrumbLine renders the read-only "in" line: committed folder segments
+// (accent when they exist, warning when they do not) and the active leaf
+// (muted when new, warning on an overwrite/folder collision).
+func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind leafKind, theme pickerTheme) string {
+	var b strings.Builder
+	b.WriteString(theme.muted("in    "))
+	for _, s := range segs {
+		name := termstyle.Sanitize(s.Name)
+		if s.Exists {
+			b.WriteString(theme.accent(name))
+		} else {
+			b.WriteString(theme.warning(name))
+		}
+		b.WriteString(theme.muted(" / "))
+	}
+	if leaf != "" {
+		lf := termstyle.Sanitize(leaf)
+		if kind == leafNew {
+			b.WriteString(theme.muted(lf))
+		} else {
+			b.WriteString(theme.warning(lf))
+		}
+	}
+	return b.String()
+}
+
+// candidateHeaderLine is the "under <dir> ... <count>" line above the list.
+func (c composerModel) candidateHeaderLine(dir, frag string, cands []pathCandidate, width int, theme pickerTheme) string {
+	left := "under " + headerDir(dir)
+	right := candidateCountLabel(frag, cands)
+	left = termstyle.Truncate(left, max(1, width-termstyle.VisibleWidth(right)-1))
+	pad := max(1, width-termstyle.VisibleWidth(left)-termstyle.VisibleWidth(right))
+	return theme.muted(left) + strings.Repeat(" ", pad) + theme.muted(right)
+}
+
+// candidateRows renders the (optionally windowed) child list with overflow
+// markers, matches first.
+func (c composerModel) candidateRows(dir, frag string, cands []pathCandidate, width int, theme pickerTheme) []string {
+	start, end := c.candidateWindow(len(cands))
+	tagW := 0
+	for i := start; i < end; i++ {
+		tag, _ := c.candidateTag(dir, frag, cands[i].node)
+		tagW = max(tagW, termstyle.VisibleWidth(tag))
+	}
+	tagW = clamp(tagW, 0, max(0, width-12))
+	var rows []string
+	if start > 0 {
+		rows = append(rows, theme.muted(fmt.Sprintf("  ... %d more above", start)))
+	}
+	for i := start; i < end; i++ {
+		rows = append(rows, c.candidateRow(dir, frag, cands[i], i, width, tagW, theme))
+	}
+	if end < len(cands) {
+		rows = append(rows, theme.muted(fmt.Sprintf("  ... %d more below", len(cands)-end)))
+	}
+	return rows
+}
+
+// candidateWindow returns the visible [start,end) slice of candidates, capped to
+// viewRows (0 = uncapped, for unit tests) and kept around the selection.
+func (c composerModel) candidateWindow(n int) (start, end int) {
+	rows := c.viewRows
+	if rows <= 0 || n <= rows {
+		return 0, n
+	}
+	sel := max(c.selIndex, 0)
+	start = sel - rows/2
+	if start < 0 {
+		start = 0
+	}
+	end = start + rows
+	if end > n {
+		end = n
+		start = max(0, end-rows)
+	}
+	return start, end
+}
+
+func (c composerModel) candidateRow(dir, frag string, cand pathCandidate, index, width, tagW int, theme pickerTheme) string {
+	selected := index == c.selIndex
+	caret, glyph := "  ", "· "
+	if cand.node.IsFolder {
+		glyph = "▸ "
+	}
+	if selected {
+		caret = "> "
+	}
+	prefixW := termstyle.VisibleWidth(caret + glyph)
+	gap := 1
+	nameWidth := max(4, width-prefixW-tagW-gap)
+	displayName := termstyle.Sanitize(cand.node.Name)
+	if cand.node.IsFolder {
+		displayName += "/"
+	}
+	base, hl := theme.muted, theme.muted
+	if cand.match {
+		base, hl = theme.primary, theme.search
+	}
+	if selected {
+		base, hl = theme.accent, theme.accent
+	}
+	styledName := highlightTitle(displayName, cand.positions, nameWidth, base, hl)
+	tag, warn := c.candidateTag(dir, frag, cand.node)
+	pad := max(1, width-prefixW-termstyle.VisibleWidth(styledName)-termstyle.VisibleWidth(tag))
+	caretStyle, glyphStyle, tagStyle := theme.muted, theme.subtle, theme.muted
+	if cand.node.IsFolder {
+		glyphStyle = theme.secondary
+	}
+	if selected {
+		caretStyle, glyphStyle = theme.accent, theme.accent
+	}
+	if warn {
+		tagStyle = theme.warning
+	}
+	return caretStyle(caret) + glyphStyle(glyph) + styledName + strings.Repeat(" ", pad) + tagStyle(tag)
+}
+
+// candidateTag is the right-aligned tag for a child row: a folder's item count,
+// "entry", or a warning "exists" when the typed fragment exactly names this
+// entry (an imminent overwrite).
+func (c composerModel) candidateTag(dir, frag string, n pathNode) (text string, warn bool) {
+	if n.IsFolder {
+		return plural(len(c.idx.children[childPath(dir, n.Name)]), "item", "items"), false
+	}
+	if n.Name == frag {
+		return "exists", true
+	}
+	return "entry", false
+}
+
+func candidateCountLabel(frag string, cands []pathCandidate) string {
+	if len(cands) == 0 {
+		return "empty"
+	}
+	if frag == "" {
+		return plural(len(cands), "item", "items")
+	}
+	if m := len(matchingCandidates(cands)); m > 0 {
+		return plural(m, "match", "matches")
+	}
+	return "no match"
+}
+
+func headerDir(dir string) string {
+	if dir == "" {
+		return "/"
+	}
+	return dir
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
 }

@@ -314,3 +314,12 @@ func displayDir(dir string) string {
 	}
 	return folderKey(dir)
 }
+
+// childPath is the full path of a child name under dir (with trailing slash),
+// used to look up a folder's grandchildren for its item count.
+func childPath(dir, name string) string {
+	if k := folderKey(dir); k != "" {
+		return k + "/" + name
+	}
+	return name
+}
