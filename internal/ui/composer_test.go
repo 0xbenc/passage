@@ -437,6 +437,29 @@ func TestComposerPathRenderSanitizesNames(t *testing.T) {
 	}
 }
 
+func TestComposerPathBreadcrumbTailTruncates(t *testing.T) {
+	c := newComposer(composePassword, []string{"alpha/bravo/charlie/delta/echo/foxtrot/other"})
+	c = typeComposer(c, "alpha/bravo/charlie/delta/echo/foxtrot/active")
+	var in string
+	for _, ln := range strings.Split(renderPathStrip(c), "\n") {
+		if strings.HasPrefix(ln, "in    ") {
+			in = ln
+		}
+	}
+	if in == "" {
+		t.Fatal("no breadcrumb line rendered")
+	}
+	if !strings.Contains(in, "…") {
+		t.Fatalf("deep breadcrumb should ellipsize: %q", in)
+	}
+	if !strings.Contains(in, "active") {
+		t.Fatalf("the active (typed) segment must stay visible: %q", in)
+	}
+	if w := termstyle.VisibleWidth(in); w > 56 {
+		t.Fatalf("breadcrumb width %d exceeds box: %q", w, in)
+	}
+}
+
 func TestComposerPathRenderViewRowsWindow(t *testing.T) {
 	paths := make([]string, 0, 12)
 	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"} {

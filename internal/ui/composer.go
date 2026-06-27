@@ -366,7 +366,7 @@ func (c composerModel) renderPath(width int, theme pickerTheme) []string {
 	// The breadcrumb earns its line only once a folder is committed — that is
 	// exactly when "confirm the folder exists" matters.
 	if len(segs) > 0 {
-		lines = append(lines, c.breadcrumbLine(segs, leaf, kind, theme))
+		lines = append(lines, c.breadcrumbLine(segs, leaf, kind, width, theme))
 	}
 	lines = append(lines, "")
 	lines = append(lines, c.candidateHeaderLine(dir, frag, cands, width, theme))
@@ -408,27 +408,63 @@ func (c composerModel) pathViewRows(width int, theme pickerTheme, avail int) int
 }
 
 // breadcrumbLine renders the read-only "in" line: committed folder segments
-// (accent when they exist, warning when they do not) and the active leaf
-// (muted when new, warning on an overwrite/folder collision).
-func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind leafKind, theme pickerTheme) string {
-	var b strings.Builder
-	b.WriteString(theme.muted("in    "))
+// (accent when they exist, warning when they do not) and the active leaf (muted
+// when new, warning on an overwrite/folder collision). When the path is too deep
+// for width it tail-truncates with a leading "…" so the active segment — the one
+// you are typing — always stays visible.
+func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind leafKind, width int, theme pickerTheme) string {
+	const sep = " / "
+	// Each folder piece carries its trailing separator, so concatenation alone
+	// yields "pp / alter-ego / " (poised inside) or "pp / alter-ego / gmail".
+	type piece struct{ plain, styled string }
+	var pieces []piece
 	for _, s := range segs {
 		name := termstyle.Sanitize(s.Name)
+		style := theme.warning
 		if s.Exists {
-			b.WriteString(theme.accent(name))
-		} else {
-			b.WriteString(theme.warning(name))
+			style = theme.accent
 		}
-		b.WriteString(theme.muted(" / "))
+		pieces = append(pieces, piece{name + sep, style(name) + theme.muted(sep)})
 	}
 	if leaf != "" {
 		lf := termstyle.Sanitize(leaf)
+		style := theme.warning
 		if kind == leafNew {
-			b.WriteString(theme.muted(lf))
-		} else {
-			b.WriteString(theme.warning(lf))
+			style = theme.muted
 		}
+		pieces = append(pieces, piece{lf, style(lf)})
+	}
+
+	const prefix = "in    "
+	budget := width - len(prefix)
+	full := 0
+	for _, p := range pieces {
+		full += termstyle.VisibleWidth(p.plain)
+	}
+
+	var b strings.Builder
+	b.WriteString(theme.muted(prefix))
+	if full <= budget || budget <= 0 {
+		for _, p := range pieces {
+			b.WriteString(p.styled)
+		}
+		return b.String()
+	}
+	// Too deep: keep the rightmost pieces that fit after a leading ellipsis, so
+	// the active segment you are typing always stays visible.
+	const ell = "… "
+	kept, used := 0, len(ell)
+	for i := len(pieces) - 1; i >= 0; i-- {
+		add := termstyle.VisibleWidth(pieces[i].plain)
+		if used+add > budget && kept > 0 {
+			break
+		}
+		used += add
+		kept++
+	}
+	b.WriteString(theme.muted(ell))
+	for i := len(pieces) - kept; i < len(pieces); i++ {
+		b.WriteString(pieces[i].styled)
 	}
 	return b.String()
 }
