@@ -24,7 +24,6 @@ type pathIndex struct {
 	entries     map[string]struct{} // exact full entry paths
 	entriesFold map[string]string   // lower(path) -> canonical path, for case-collision detection
 	folders     map[string]struct{} // every leading-prefix folder (no trailing slash): "pp", "pp/alter-ego"
-	foldersFold map[string]struct{} // lower(folder) -> presence, for case-insensitive folder existence
 	children    map[string][]pathNode
 }
 
@@ -36,7 +35,6 @@ func buildPathIndex(entryPaths []string) pathIndex {
 		entries:     map[string]struct{}{},
 		entriesFold: map[string]string{},
 		folders:     map[string]struct{}{},
-		foldersFold: map[string]struct{}{},
 		children:    map[string][]pathNode{},
 	}
 	type agg struct{ isFolder, isEntry bool }
@@ -78,9 +76,7 @@ func buildPathIndex(entryPaths []string) pathIndex {
 			isFolder := i < len(parts)-1
 			addChild(parent, part, isFolder)
 			if isFolder {
-				folder := strings.Join(parts[:i+1], "/")
-				idx.folders[folder] = struct{}{}
-				idx.foldersFold[strings.ToLower(folder)] = struct{}{}
+				idx.folders[strings.Join(parts[:i+1], "/")] = struct{}{}
 			}
 		}
 	}
@@ -286,7 +282,7 @@ func (idx pathIndex) breadcrumbSegments(field string) (segs []breadcrumbSeg, lea
 			continue
 		}
 		prefix := strings.Join(parts[:i+1], "/")
-		_, exists := idx.foldersFold[strings.ToLower(prefix)]
+		_, exists := idx.folders[prefix]
 		segs = append(segs, breadcrumbSeg{Name: parts[i], Exists: exists})
 	}
 	return segs, leaf, kind

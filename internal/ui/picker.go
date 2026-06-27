@@ -1556,7 +1556,9 @@ func (m pickerModel) confirmText(action Action) (string, string) {
 }
 
 func (m pickerModel) composerLines(width int, theme pickerTheme, avail int) []string {
-	boxWidth := clamp(width, 54, 100)
+	// Lower-bound by the available width so the box can never exceed the outer
+	// shell's inner width on a narrow terminal (which would truncate its border).
+	boxWidth := clamp(width, min(54, width), 100)
 	c := *m.composer
 	if m.secretHidden {
 		// Terminal lost focus: re-mask a ^R-revealed secret for rendering only,
@@ -1566,7 +1568,7 @@ func (m pickerModel) composerLines(width int, theme pickerTheme, avail int) []st
 		c.confirm.masked = true
 	}
 	if c.step == stepPath {
-		c.viewRows = c.pathViewRows(boxWidth-4, theme, avail)
+		c.viewRows = c.pathViewRows(avail)
 	}
 	body := c.render(boxWidth-4, theme)
 	return splitRendered(renderWorkflowShell(theme, boxWidth, workflowShell{

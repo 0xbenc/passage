@@ -156,6 +156,57 @@ func TestPickerShiftedNGOpenComposer(t *testing.T) {
 	}
 }
 
+// TestComposerEntryPathsIgnoreFilterAndMFA proves the completion index is built
+// from the full store, never the visible (mfa/query-filtered) subset — so a
+// folder you can't currently see is still completable.
+func TestComposerEntryPathsIgnoreFilterAndMFA(t *testing.T) {
+	entries := []passstore.Entry{
+		{Path: "mfa/site", Display: passstore.Display("mfa/site"), HasMFA: true},
+		{Path: "plain/site", Display: passstore.Display("plain/site")},
+	}
+	model := newPickerModel(entries, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 24
+	model.mfaOnly = true // would hide plain/site from the list
+	model.query = "mfa"  // would also exclude plain/site
+	model.applyFilter()
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "N"}))
+	got := updated.(pickerModel)
+	if got.composer == nil {
+		t.Fatal("composer did not open")
+	}
+	if _, ok := got.composer.idx.entries["plain/site"]; !ok {
+		t.Fatalf("completion index must include filtered-out entries, got: %v", got.composer.idx.entries)
+	}
+}
+
+// TestComposerHeightBudgetExtremeShort drives the View defensive clamp on a
+// pathologically short terminal and asserts the outer footer still survives.
+func TestComposerHeightBudgetExtremeShort(t *testing.T) {
+	var entries []passstore.Entry
+	for _, n := range "abcdefghijklmnop" {
+		p := "root/" + string(n)
+		entries = append(entries, passstore.Entry{Path: p, Display: passstore.Display(p)})
+	}
+	model := newPickerModel(entries, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 10
+	var m tea.Model = model
+	send := func(k tea.Key) { u, _ := m.Update(tea.KeyPressMsg(k)); m = u }
+	send(tea.Key{Text: "N"})
+	for _, r := range "root/" {
+		send(tea.Key{Text: string(r)})
+	}
+	out := m.(pickerModel).View().Content
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) > model.height {
+		t.Fatalf("rendered %d lines > height %d:\n%s", len(lines), model.height, termstyle.Strip(out))
+	}
+	if !strings.Contains(termstyle.Strip(out), pickerFooterText()) {
+		t.Fatalf("footer clipped at extreme height:\n%s", termstyle.Strip(out))
+	}
+}
+
 // TestComposerHeightBudgetKeepsFrame opens the composer over a folder with many
 // children on a short terminal and asserts the candidate window shrinks so the
 // outer footer and bottom border are never pushed off-screen.

@@ -191,6 +191,11 @@ func TestApplyNode(t *testing.T) {
 	if f != "pp/alter-ego/proton" || descended {
 		t.Fatalf("entry apply = (%q,%v), want (pp/alter-ego/proton,false)", f, descended)
 	}
+	// A name that is both a folder and an entry descends (folder wins).
+	f, descended = applyNode("a/", pathNode{Name: "b", IsFolder: true, IsEntry: true})
+	if f != "a/b/" || !descended {
+		t.Fatalf("dual node apply = (%q,%v), want (a/b/,true)", f, descended)
+	}
 }
 
 func TestBreadcrumbSegments(t *testing.T) {

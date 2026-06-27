@@ -227,7 +227,7 @@ func (c composerModel) completePath(dir, frag string) composerModel {
 	switch len(matches) {
 	case 0:
 		if frag == "" {
-			c.notice = "no entries in " + displayDir(dir)
+			c.notice = "no entries in " + termstyle.Sanitize(displayDir(dir))
 		} else {
 			c.notice = "no match — " + strconv.Quote(frag) + " will be a new entry"
 		}
@@ -236,9 +236,10 @@ func (c composerModel) completePath(dir, frag string) composerModel {
 		c.path = c.path.withValue(newField)
 		c.notice = ""
 	default:
-		// Extend to the common prefix only when it makes progress; the live
-		// list already shows every match for the next keystroke.
-		if prefix := commonCompletionPrefix(matches); len([]rune(prefix)) > len([]rune(frag)) {
+		// Extend to the common prefix when it adds characters or corrects the
+		// fragment's case to the store's canonical spelling; the live list
+		// already shows every match for the next keystroke.
+		if prefix := commonCompletionPrefix(matches); prefix != "" && prefix != frag {
 			c.path = c.path.withValue(dir + prefix)
 		}
 		c.notice = ""
@@ -259,7 +260,7 @@ func (c composerModel) submitPath(field string) composerModel {
 	case leafEmptySegment:
 		c.notice = "remove the empty path segment"
 	case leafPathIsFolder:
-		c.notice = strings.TrimSpace(field) + " is a folder — add /name"
+		c.notice = termstyle.Sanitize(strings.TrimSpace(field)) + " is a folder — add /name"
 	case leafExistingEntry:
 		c.notice = "entry exists — esc, then E to edit"
 	case leafCaseCollision:
@@ -322,7 +323,7 @@ func (c composerModel) render(width int, theme pickerTheme) []string {
 	if c.step == stepPath {
 		pathLine = theme.primary("path  " + c.path.render(fieldWidth))
 	} else {
-		pathLine = theme.muted("path  ") + theme.primary(termstyle.Truncate(c.path.String(), fieldWidth))
+		pathLine = theme.muted("path  ") + theme.primary(termstyle.Truncate(termstyle.Sanitize(c.path.String()), fieldWidth))
 	}
 	lines := []string{pathLine}
 	switch c.step {
@@ -389,22 +390,52 @@ func (c composerModel) renderPath(width int, theme pickerTheme) []string {
 // It returns 0 (uncapped) when the full list already fits. width is the box's
 // inner content width; the receiver's viewRows is still 0 here, so the measuring
 // render is uncapped.
-func (c composerModel) pathViewRows(width int, theme pickerTheme, avail int) int {
-	dir, frag := splitPath(c.path.String())
+func (c composerModel) pathViewRows(avail int) int {
+	field := c.path.String()
+	dir, frag := splitPath(field)
 	total := len(c.idx.completionCandidates(dir, frag))
 	if total == 0 {
 		return 0
 	}
-	nonCandidate := len(c.render(width, theme)) - total // body lines that aren't candidate rows
-	maxRows := (avail - 4) - nonCandidate - 2           // -4 shell overhead, -2 overflow markers
+	// Count the body lines that are NOT candidate rows, structurally (cheaper
+	// and clearer than rendering): path line + blank spacer (2), breadcrumb,
+	// candidate header, the no-match hint, and any notice.
+	nonCandidate := c.pathNonCandidateLines()
+	// With no selection the window is anchored at the top, so only a "below"
+	// marker can appear; otherwise reserve for both.
+	markers := 2
+	if c.selIndex < 0 {
+		markers = 1
+	}
+	maxRows := (avail - 4) - nonCandidate - markers // -4 for the box's shell lines
 	switch {
 	case maxRows >= total:
 		return 0 // fits uncapped
 	case maxRows < 1:
-		return 1
+		return -1 // no room for even one row: render only the overflow marker
 	default:
 		return maxRows
 	}
+}
+
+// pathNonCandidateLines counts the stepPath body lines other than candidate
+// rows, so pathViewRows can budget the window without a measuring render.
+func (c composerModel) pathNonCandidateLines() int {
+	field := c.path.String()
+	dir, frag := splitPath(field)
+	segs, _, _ := c.idx.breadcrumbSegments(field)
+	cands := c.idx.completionCandidates(dir, frag)
+	n := 3 // path line + blank spacer + candidate header
+	if len(segs) > 0 {
+		n++ // breadcrumb
+	}
+	if frag != "" && len(cands) > 0 && len(matchingCandidates(cands)) == 0 {
+		n++ // "no existing name starts with …" hint
+	}
+	if c.notice != "" {
+		n++
+	}
+	return n
 }
 
 // breadcrumbLine renders the read-only "in" line: committed folder segments
@@ -471,7 +502,7 @@ func (c composerModel) breadcrumbLine(segs []breadcrumbSeg, leaf string, kind le
 
 // candidateHeaderLine is the "under <dir> ... <count>" line above the list.
 func (c composerModel) candidateHeaderLine(dir, frag string, cands []pathCandidate, width int, theme pickerTheme) string {
-	left := "under " + headerDir(dir)
+	left := "under " + headerDir(termstyle.Sanitize(dir))
 	right := candidateCountLabel(frag, cands)
 	left = termstyle.Truncate(left, max(1, width-termstyle.VisibleWidth(right)-1))
 	pad := max(1, width-termstyle.VisibleWidth(left)-termstyle.VisibleWidth(right))
@@ -505,7 +536,10 @@ func (c composerModel) candidateRows(dir, frag string, cands []pathCandidate, wi
 // viewRows (0 = uncapped, for unit tests) and kept around the selection.
 func (c composerModel) candidateWindow(n int) (start, end int) {
 	rows := c.viewRows
-	if rows <= 0 || n <= rows {
+	if rows < 0 {
+		return 0, 0 // no room: render only the "more below" marker
+	}
+	if rows == 0 || n <= rows {
 		return 0, n
 	}
 	sel := max(c.selIndex, 0)
@@ -567,7 +601,9 @@ func (c composerModel) candidateTag(dir, frag string, n pathNode) (text string, 
 	if n.IsFolder {
 		return plural(len(c.idx.children[childPath(dir, n.Name)]), "item", "items"), false
 	}
-	if n.Name == frag {
+	// Case-insensitive so the "exists" warning fires for exactly the fragments
+	// the enter-gate blocks (leafExistingEntry and leafCaseCollision).
+	if strings.EqualFold(n.Name, frag) {
 		return "exists", true
 	}
 	return "entry", false

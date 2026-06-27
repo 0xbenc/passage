@@ -474,6 +474,102 @@ func TestComposerPathRenderViewRowsWindow(t *testing.T) {
 	}
 }
 
+func TestComposerPathTabAcceptsHighlighted(t *testing.T) {
+	// Folder accepted via highlight + TAB descends.
+	c := newComposer(composePassword, fixturePaths)
+	c = c.update("down", "") // highlight first root child (pp)
+	c = c.update("tab", "")
+	if c.path.String() != "pp/" || c.selIndex != -1 {
+		t.Fatalf("tab-accept folder: path=%q sel=%d", c.path.String(), c.selIndex)
+	}
+	// Entry accepted via highlight + TAB fills the full name.
+	c2 := newComposer(composePassword, fixturePaths)
+	c2 = typeComposer(c2, "pp/backup/")
+	c2 = c2.update("down", "") // highlight the lone child "key" (entry)
+	c2 = c2.update("tab", "")
+	if c2.path.String() != "pp/backup/key" {
+		t.Fatalf("tab-accept entry: path=%q", c2.path.String())
+	}
+}
+
+func TestComposerPathArrowSelectEntryEnterBlocks(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "pp/backup/")
+	c = c.update("down", "")  // highlight entry "key"
+	c = c.update("enter", "") // fills the entry then validates -> blocked overwrite
+	if c.path.String() != "pp/backup/key" {
+		t.Fatalf("enter should fill the highlighted entry: %q", c.path.String())
+	}
+	if c.step != stepPath || !strings.Contains(c.notice, "exists") {
+		t.Fatalf("enter on existing entry: step=%v notice=%q", c.step, c.notice)
+	}
+}
+
+func TestComposerPathArrowSelectTargetsReorderedMatch(t *testing.T) {
+	// frag matches "zebra" (sorts after "apple" by name, but matches come first).
+	c := newComposer(composePassword, []string{"app/zebra/x", "app/apple/y"})
+	c = typeComposer(c, "app/z")
+	out := renderPathStrip(c)
+	if zi, ai := strings.Index(out, "zebra"), strings.Index(out, "apple"); zi < 0 || ai < 0 || zi > ai {
+		t.Fatalf("matches-first should list zebra before apple:\n%s", out)
+	}
+	c = c.update("down", "")  // selects index 0 (zebra, the reordered match)
+	c = c.update("enter", "") // descend the highlighted folder
+	if c.path.String() != "app/zebra/" || c.step != stepPath || c.selIndex != -1 {
+		t.Fatalf("arrow+enter on reordered match: path=%q step=%v sel=%d", c.path.String(), c.step, c.selIndex)
+	}
+}
+
+func TestComposerPathDualNodeTabDescends(t *testing.T) {
+	// "a/b" is both an entry and a folder; the single dual match descends.
+	c := newComposer(composePassword, []string{"a/b", "a/b/c"})
+	c = typeComposer(c, "a/b")
+	c = c.update("tab", "")
+	if c.path.String() != "a/b/" {
+		t.Fatalf("dual-node tab should descend: %q", c.path.String())
+	}
+}
+
+func TestComposerPathTabCommonPrefixCanonicalCase(t *testing.T) {
+	c := newComposer(composePassword, []string{"Apple/x", "Apricot/y"})
+	c = typeComposer(c, "ap") // case-insensitive match of both
+	c = c.update("tab", "")
+	if c.path.String() != "Ap" {
+		t.Fatalf("common-prefix tab should adopt canonical case: %q, want Ap", c.path.String())
+	}
+}
+
+func TestComposerPathCompletionSanitizesSplicedName(t *testing.T) {
+	// Completing a hostile store name must not splice raw escape/control bytes
+	// into the rendered path line.
+	c := newComposer(composePassword, []string{"danger/ev\x1b[31mil\x07"})
+	c = typeComposer(c, "danger/")
+	c = c.update("tab", "") // unique child -> splices the raw name into the field
+	out := termstyle.Strip(strings.Join(c.render(56, pickerTheme{theme: termstyle.TerminalTheme()}), "\n"))
+	for _, bad := range []rune{'\x1b', '\x07'} {
+		if strings.ContainsRune(out, bad) {
+			t.Fatalf("control byte %#x leaked into render after completion:\n%q", bad, out)
+		}
+	}
+}
+
+func TestComposerPathRenderMoreAboveMarker(t *testing.T) {
+	var paths []string
+	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"} {
+		paths = append(paths, "root/"+n)
+	}
+	c := newComposer(composePassword, paths)
+	c = typeComposer(c, "root/")
+	c.viewRows = 4
+	for i := 0; i < 11; i++ { // scroll the selection to the end of the list
+		c = c.update("down", "")
+	}
+	out := renderPathStrip(c)
+	if !strings.Contains(out, "more above") {
+		t.Fatalf("a scrolled window should show a 'more above' marker:\n%s", out)
+	}
+}
+
 func TestPickerRendersReadOnlyBadge(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "work/aws/db", Display: passstore.Display("work/aws/db")},
