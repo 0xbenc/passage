@@ -19,6 +19,15 @@ func (f textField) String() string {
 	return string(f.value)
 }
 
+// displayString returns the field's visible content without a cursor — bullets
+// when masked, plaintext otherwise. Used to show a settled field as context.
+func (f textField) displayString() string {
+	if !f.masked {
+		return string(f.value)
+	}
+	return strings.Repeat("•", len(f.value))
+}
+
 // update applies one keystroke. key is the normalized key name; text is the
 // printable text (if any).
 func (f textField) update(key, text string) textField {

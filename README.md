@@ -18,7 +18,9 @@ the same `entry/mfa` convention used by the old script.
   recents, and MFA badges. A responsive detail pane appears on wide terminals,
   and `?` opens a grouped key reference.
 - In-picker create/generate/edit/delete and a "trust" action (shifted keys
-  `N`/`G`/`E`/`D`/`T`), with an `RO` badge marking read-only folders. Lowercase
+  `N`/`G`/`E`/`D`/`T`), with an `RO` badge marking read-only folders. A typed
+  new secret is entered twice and must match before it is saved; `ctrl+r`
+  toggles between masked dots and plaintext while typing. Lowercase
   always filters, so the shifted keys never get in the way of typing. `I` opens
   a folder browser to import + trust a directory of public keys; `S` imports
   your own secret key(s) and sets them up (ultimate trust) on a new machine.

@@ -156,6 +156,46 @@ func TestPickerShiftedNGOpenComposer(t *testing.T) {
 	}
 }
 
+// TestComposerRevealedSecretBlankedOnBlur pins the defense-in-depth parity with
+// the reveal modal: a composer secret shown via ^R must be blanked when the
+// terminal loses focus and restored when it regains focus.
+func TestComposerRevealedSecretBlankedOnBlur(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{{Path: "x", Display: "x"}}, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 24
+	var m tea.Model = model
+	send := func(k tea.Key) {
+		u, _ := m.Update(tea.KeyPressMsg(k))
+		m = u
+	}
+	send(tea.Key{Text: "N"}) // open the type-a-secret composer
+	for _, r := range "site" {
+		send(tea.Key{Text: string(r)})
+	}
+	send(tea.Key{Code: tea.KeyEnter}) // -> secret step
+	const secret = "plaintextpw123"
+	for _, r := range secret {
+		send(tea.Key{Text: string(r)})
+	}
+	send(tea.Key{Code: 'r', Mod: tea.ModCtrl}) // reveal
+
+	if shown := termstyle.Strip(m.(pickerModel).View().Content); !strings.Contains(shown, secret) {
+		t.Fatalf("revealed secret should be visible before blur:\n%s", shown)
+	}
+	// Terminal loses focus: the revealed secret must be blanked.
+	blurred, _ := m.Update(tea.BlurMsg{})
+	m = blurred
+	if hidden := termstyle.Strip(m.(pickerModel).View().Content); strings.Contains(hidden, secret) {
+		t.Fatalf("revealed secret leaked on blur:\n%s", hidden)
+	}
+	// Refocus restores the revealed secret.
+	focused, _ := m.Update(tea.FocusMsg{})
+	m = focused
+	if restored := termstyle.Strip(m.(pickerModel).View().Content); !strings.Contains(restored, secret) {
+		t.Fatalf("revealed secret should return on focus:\n%s", restored)
+	}
+}
+
 func TestPickerLowercaseStillFiltersDespiteActionKeys(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "twitter", Display: "twitter"},

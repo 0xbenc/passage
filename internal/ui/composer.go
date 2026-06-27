@@ -19,6 +19,7 @@ type composerStep int
 const (
 	stepPath composerStep = iota
 	stepSecret
+	stepConfirm
 	stepLength
 )
 
@@ -29,16 +30,20 @@ const (
 )
 
 // composerModel is the multi-step "new entry" sub-surface: it collects an entry
-// path, then either a typed (masked) secret or generate options, and yields a
-// composerResult for the CLI to apply. It is a pure state machine — no I/O — so
-// its transitions are unit-tested without a terminal.
+// path, then either a typed secret (entered twice and required to match) or
+// generate options, and yields a composerResult for the CLI to apply. The typed
+// secret is masked by default; ^R toggles plaintext on both the secret and
+// confirm fields together. It is a pure state machine — no I/O — so its
+// transitions are unit-tested without a terminal.
 type composerModel struct {
 	mode      composerMode
 	step      composerStep
 	path      textField
 	secret    textField
+	confirm   textField
 	length    int
 	noSymbols bool
+	mismatch  bool
 	done      bool
 	canceled  bool
 }
@@ -53,10 +58,11 @@ type composerResult struct {
 
 func newComposer(mode composerMode) composerModel {
 	return composerModel{
-		mode:   mode,
-		step:   stepPath,
-		secret: textField{masked: true},
-		length: composerDefaultLength,
+		mode:    mode,
+		step:    stepPath,
+		secret:  textField{masked: true},
+		confirm: textField{masked: true},
+		length:  composerDefaultLength,
 	}
 }
 
@@ -64,6 +70,14 @@ func (c composerModel) update(key, text string) composerModel {
 	if key == "esc" {
 		c.canceled = true
 		c.done = true
+		return c
+	}
+	// ^R toggles plaintext for the typed secret. Both entry fields share one
+	// visibility so the confirmation is shown the same way as the original.
+	if key == "ctrl+r" && (c.step == stepSecret || c.step == stepConfirm) {
+		reveal := c.secret.masked
+		c.secret.masked = !reveal
+		c.confirm.masked = !reveal
 		return c
 	}
 	switch c.step {
@@ -86,13 +100,34 @@ func (c composerModel) update(key, text string) composerModel {
 	case stepSecret:
 		switch key {
 		case "enter":
-			c.done = true
+			// Require a non-empty secret, then confirm it by re-typing.
+			if c.secret.String() == "" {
+				return c
+			}
+			c.mismatch = false
+			c.step = stepConfirm
 		case "ctrl+g":
 			// Switch to generate instead of typing a secret.
 			c.mode = composeGenerate
 			c.step = stepLength
 		default:
 			c.secret = c.secret.update(key, text)
+		}
+	case stepConfirm:
+		switch key {
+		case "enter":
+			if c.confirm.String() == c.secret.String() {
+				c.done = true
+				break
+			}
+			// Mismatch: drop both entries and start over so a typo in either
+			// field can't be silently saved. Visibility is preserved.
+			c.mismatch = true
+			c.secret = textField{masked: c.secret.masked}
+			c.confirm = textField{masked: c.confirm.masked}
+			c.step = stepSecret
+		default:
+			c.confirm = c.confirm.update(key, text)
 		}
 	case stepLength:
 		switch key {
@@ -136,10 +171,21 @@ func (c composerModel) footer() string {
 	case stepPath:
 		return "enter next  ^G generate  esc cancel"
 	case stepSecret:
-		return "enter save  ^G generate instead  esc cancel"
+		return "enter next  ^R " + c.revealLabel() + "  ^G generate  esc cancel"
+	case stepConfirm:
+		return "enter save  ^R " + c.revealLabel() + "  esc cancel"
 	default:
 		return "↑/↓ length  s symbols  enter make  esc cancel"
 	}
+}
+
+// revealLabel names the action ^R would perform next, given the current
+// visibility of the secret fields.
+func (c composerModel) revealLabel() string {
+	if c.secret.masked {
+		return "show"
+	}
+	return "hide"
 }
 
 func (c composerModel) render(width int, theme pickerTheme) []string {
@@ -155,7 +201,17 @@ func (c composerModel) render(width int, theme pickerTheme) []string {
 	case stepPath:
 		// nothing else yet
 	case stepSecret:
-		lines = append(lines, theme.primary("secret  "+c.secret.render(fieldWidth)))
+		lines = append(lines, theme.primary("secret   "+c.secret.render(fieldWidth)))
+		if c.mismatch {
+			lines = append(lines, theme.warning("secrets did not match — type it again"))
+		}
+	case stepConfirm:
+		// The first entry is settled context (no cursor); the confirm field is
+		// active. Aligned so a revealed secret lines up for visual comparison.
+		lines = append(lines,
+			theme.muted("secret   ")+theme.secondary(termstyle.Truncate(c.secret.displayString(), fieldWidth)),
+			theme.primary("confirm  "+c.confirm.render(fieldWidth)),
+		)
 	case stepLength:
 		lines = append(lines, theme.primary("length  "+strconv.Itoa(c.length)))
 		symbols := "on"

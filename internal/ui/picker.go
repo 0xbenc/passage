@@ -204,7 +204,7 @@ type pickerModel struct {
 	saveTheme      ThemeSaveFunc
 	themeEditor    *themeEditorModel
 	glyphs         termstyle.GlyphSet
-	secretHidden   bool // secret modal blanked because the terminal lost focus
+	secretHidden   bool // revealed secret (modal or composer) blanked because the terminal lost focus
 	help           bool // the ? key reference overlay is open
 	clip           *clipState
 	clearClipboard func(context.Context) error
@@ -354,7 +354,8 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		// Alt-tab away: blank a revealed secret so it is not left on screen
 		// for an unattended terminal. Defense-in-depth atop the countdown.
-		if m.modal != nil && m.modal.secret {
+		// Covers both the reveal modal and a composer secret shown via ^R.
+		if (m.modal != nil && m.modal.secret) || (m.composer != nil && !m.composer.secret.masked) {
 			m.secretHidden = true
 		}
 	case tea.FocusMsg:
@@ -1529,11 +1530,19 @@ func (m pickerModel) confirmText(action Action) (string, string) {
 
 func (m pickerModel) composerLines(width int, theme pickerTheme) []string {
 	boxWidth := clamp(width, 54, 100)
-	body := m.composer.render(boxWidth-4, theme)
+	c := *m.composer
+	if m.secretHidden {
+		// Terminal lost focus: re-mask a ^R-revealed secret for rendering only,
+		// without losing the underlying reveal state. Mirrors the modal
+		// blanking and is restored on FocusMsg.
+		c.secret.masked = true
+		c.confirm.masked = true
+	}
+	body := c.render(boxWidth-4, theme)
 	return splitRendered(renderWorkflowShell(theme, boxWidth, workflowShell{
-		Title:  m.composer.title(),
+		Title:  c.title(),
 		Body:   body,
-		Footer: m.composer.footer(),
+		Footer: c.footer(),
 	}))
 }
 
