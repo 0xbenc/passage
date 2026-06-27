@@ -535,6 +535,12 @@ func (m pickerModel) View() tea.View {
 		body = append(body, m.listLines(spec.bodyWidth, theme, spec.listHeight)...)
 	}
 	body = append(body, spec.tail...)
+	// Defensive backstop: never let an oversized overlay push the shell footer or
+	// border off the alt-screen. The composer sizes its candidate window to avoid
+	// this in normal cases; this only bites on a pathologically short terminal.
+	if maxBody := max(1, m.height-pickerShellStructuralLines(spec.footer)); len(body) > maxBody {
+		body = body[:maxBody]
+	}
 	view := tea.NewView(renderWorkflowShell(theme, spec.width, workflowShell{
 		Title:  m.titleLine(),
 		Body:   body,
@@ -743,7 +749,10 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 	}
 	if m.composer != nil {
 		tail = append(tail, "")
-		tail = append(tail, m.composerLines(bodyWidth, theme)...)
+		// Height the composer's candidate window so the entry list keeps a floor
+		// and the box can't push the footer off the frame.
+		avail := m.height - pickerShellStructuralLines(footer) - len(header) - len(tail) - composerListFloor
+		tail = append(tail, m.composerLines(bodyWidth, theme, avail)...)
 	}
 	listHeight := max(1, m.height-pickerShellStructuralLines(footer)-len(header)-len(tail))
 	return layoutSpec{
@@ -1546,7 +1555,7 @@ func (m pickerModel) confirmText(action Action) (string, string) {
 	}
 }
 
-func (m pickerModel) composerLines(width int, theme pickerTheme) []string {
+func (m pickerModel) composerLines(width int, theme pickerTheme, avail int) []string {
 	boxWidth := clamp(width, 54, 100)
 	c := *m.composer
 	if m.secretHidden {
@@ -1555,6 +1564,9 @@ func (m pickerModel) composerLines(width int, theme pickerTheme) []string {
 		// blanking and is restored on FocusMsg.
 		c.secret.masked = true
 		c.confirm.masked = true
+	}
+	if c.step == stepPath {
+		c.viewRows = c.pathViewRows(boxWidth-4, theme, avail)
 	}
 	body := c.render(boxWidth-4, theme)
 	return splitRendered(renderWorkflowShell(theme, boxWidth, workflowShell{

@@ -28,6 +28,10 @@ const (
 	composerDefaultLength = 24
 	composerMinLength     = 4
 	composerMaxLength     = 128
+
+	// composerListFloor is the minimum number of entry-list rows kept visible
+	// above an open composer; the candidate window shrinks before this floor.
+	composerListFloor = 3
 )
 
 // composerModel is the multi-step "new entry" sub-surface: it collects an entry
@@ -378,6 +382,29 @@ func (c composerModel) renderPath(width int, theme pickerTheme) []string {
 		lines = append(lines, theme.warning(c.notice))
 	}
 	return lines
+}
+
+// pathViewRows caps the candidate window so the composer box fits within avail
+// total lines (its 4 shell lines + body) while keeping every other body line.
+// It returns 0 (uncapped) when the full list already fits. width is the box's
+// inner content width; the receiver's viewRows is still 0 here, so the measuring
+// render is uncapped.
+func (c composerModel) pathViewRows(width int, theme pickerTheme, avail int) int {
+	dir, frag := splitPath(c.path.String())
+	total := len(c.idx.completionCandidates(dir, frag))
+	if total == 0 {
+		return 0
+	}
+	nonCandidate := len(c.render(width, theme)) - total // body lines that aren't candidate rows
+	maxRows := (avail - 4) - nonCandidate - 2           // -4 shell overhead, -2 overflow markers
+	switch {
+	case maxRows >= total:
+		return 0 // fits uncapped
+	case maxRows < 1:
+		return 1
+	default:
+		return maxRows
+	}
 }
 
 // breadcrumbLine renders the read-only "in" line: committed folder segments

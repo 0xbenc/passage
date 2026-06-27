@@ -156,6 +156,42 @@ func TestPickerShiftedNGOpenComposer(t *testing.T) {
 	}
 }
 
+// TestComposerHeightBudgetKeepsFrame opens the composer over a folder with many
+// children on a short terminal and asserts the candidate window shrinks so the
+// outer footer and bottom border are never pushed off-screen.
+func TestComposerHeightBudgetKeepsFrame(t *testing.T) {
+	var entries []passstore.Entry
+	for _, n := range "abcdefghijklmnopqrstuvwxyz" {
+		p := "root/" + string(n)
+		entries = append(entries, passstore.Entry{Path: p, Display: passstore.Display(p)})
+	}
+	model := newPickerModel(entries, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 18
+	var m tea.Model = model
+	send := func(k tea.Key) { u, _ := m.Update(tea.KeyPressMsg(k)); m = u }
+	send(tea.Key{Text: "N"})
+	for _, r := range "root/" {
+		send(tea.Key{Text: string(r)})
+	}
+	out := m.(pickerModel).View().Content
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) > model.height {
+		t.Fatalf("rendered %d lines > height %d:\n%s", len(lines), model.height, termstyle.Strip(out))
+	}
+	stripped := termstyle.Strip(out)
+	if !strings.Contains(stripped, "╰") {
+		t.Fatalf("bottom border clipped off the frame:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, pickerFooterText()) {
+		t.Fatalf("footer clipped off the frame:\n%s", stripped)
+	}
+	// The candidate window had to scroll, so an overflow marker is present.
+	if !strings.Contains(stripped, "more below") {
+		t.Fatalf("expected the candidate window to be windowed:\n%s", stripped)
+	}
+}
+
 // TestComposerRevealedSecretBlankedOnBlur pins the defense-in-depth parity with
 // the reveal modal: a composer secret shown via ^R must be blanked when the
 // terminal loses focus and restored when it regains focus.
