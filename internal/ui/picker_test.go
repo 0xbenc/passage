@@ -12,6 +12,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termnav/render"
 )
 
 func manyEntries(n int) []passstore.Entry {
@@ -121,6 +122,7 @@ func TestPickerShiftedKeysTriggerWriteActions(t *testing.T) {
 		{"E", ActionEdit},
 		{"T", ActionTrust},
 		{"D", ActionRemove},
+		{"P", ActionTogglePin},
 	}
 	for _, tc := range cases {
 		model := newPickerModel([]passstore.Entry{
@@ -534,7 +536,7 @@ func TestPickerFuzzyFilterCrossesDelimiter(t *testing.T) {
 func TestHighlightTitleStylesMatchedRunes(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	// "work | github": g at rune 7, h at rune 10.
-	title := highlightTitle("work | github", []int{7, 10}, 40, theme.primary, theme.search)
+	title := render.HighlightMatches("work | github", []int{7, 10}, 40, theme.primary, theme.search)
 
 	if got := termstyle.Strip(title); got != "work | github" {
 		t.Fatalf("Strip(title) = %q, want plain title", got)
@@ -555,7 +557,7 @@ func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	// Width 8 keeps "work | " (7 cells) + "~"; the g/h at 7/10 are cut and
 	// must not be highlighted (nor index out of range).
-	title := highlightTitle("work | github", []int{7, 10}, 8, theme.primary, theme.search)
+	title := render.HighlightMatches("work | github", []int{7, 10}, 8, theme.primary, theme.search)
 	if got := termstyle.Strip(title); got != "work | ~" {
 		t.Fatalf("Strip(title) = %q, want \"work | ~\"", got)
 	}
@@ -643,7 +645,7 @@ func TestSelectedRowNoColorUsesCaret(t *testing.T) {
 	if strings.Contains(line, "\x1b[") {
 		t.Fatalf("NoColor selected row must emit no escapes: %q", line)
 	}
-	if !strings.HasPrefix(line, "> ") {
+	if !strings.HasPrefix(line, ">>") {
 		t.Fatalf("NoColor selected row must lead with the caret: %q", line)
 	}
 }
@@ -712,7 +714,6 @@ func TestPickerCtrlHotkeysRunActions(t *testing.T) {
 		{name: "copy", key: ctrlKey('y'), action: ActionCopy},
 		{name: "reveal", key: ctrlKey('r'), action: ActionReveal},
 		{name: "totp", key: ctrlKey('t'), action: ActionTOTP},
-		{name: "pin", key: ctrlKey('p'), action: ActionTogglePin},
 		{name: "clear clipboard", key: ctrlKey('x'), action: ActionClearClipboard},
 		{name: "doctor", key: ctrlKey('d'), action: ActionDoctor},
 		{name: "keys", key: ctrlKey('k'), action: ActionKeys},
@@ -753,7 +754,8 @@ func TestPickerCtrlFTogglesMFAOnly(t *testing.T) {
 	}
 }
 
-func TestPickerCtrlPIsPinNotMoveUp(t *testing.T) {
+func TestPickerCtrlPMovesCursorUp(t *testing.T) {
+	// ctrl+p is now emacs cursor-up (toggle-pin moved to capital P).
 	model := newPickerModel([]passstore.Entry{
 		{Path: "alpha", Display: "alpha"},
 		{Path: "beta", Display: "beta"},
@@ -763,11 +765,28 @@ func TestPickerCtrlPIsPinNotMoveUp(t *testing.T) {
 	updated, _ := model.Update(ctrlKey('p'))
 	got := updated.(pickerModel)
 
-	if got.action != ActionTogglePin {
-		t.Fatalf("action = %q, want %q", got.action, ActionTogglePin)
+	if got.cursor != 0 {
+		t.Fatalf("ctrl+p cursor = %d, want 0 (emacs move up)", got.cursor)
 	}
-	if got.selected != 1 {
-		t.Fatalf("selected = %d, want 1", got.selected)
+	if got.action == ActionTogglePin {
+		t.Fatal("ctrl+p must no longer toggle pin")
+	}
+}
+
+func TestPickerCapitalPTogglesPin(t *testing.T) {
+	// Toggle-pin relocated from ctrl+p to the shifted command P.
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "P"}))
+	got := updated.(pickerModel)
+
+	if got.action != ActionTogglePin {
+		t.Fatalf("P: action = %q, want %q", got.action, ActionTogglePin)
+	}
+	if got.query != "" {
+		t.Fatalf("P leaked into filter: %q", got.query)
 	}
 }
 

@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/0xbenc/termtheme"
 )
 
 // Theme is passage's concrete palette: a role->SGR-code map plus a NoColor
@@ -33,12 +34,16 @@ func TerminalTheme() Theme {
 	return Theme{
 		Name: "terminal",
 		Codes: map[Role]string{
-			RoleTitle:       "32",
+			// Canonical terminal palette (TUI-alignment P5/K-a): Title/Muted/Subtle
+			// adopt ssherpa's values, fixing passage's self-collisions
+			// (Title==Success "32", Subtle==Foreground "39") and faint "2"-as-muted.
+			// RoleBorder stays bold-green "1;32" — passage's brand, not canonicalized (Q1).
+			RoleTitle:       "1;36",
 			RolePrimary:     "36",
 			RoleSecondary:   "34",
 			RoleAccent:      "33",
-			RoleMuted:       "2",
-			RoleSubtle:      "39",
+			RoleMuted:       "90",
+			RoleSubtle:      "2",
 			RoleForeground:  "39",
 			RoleSelected:    "39;4",
 			RoleSelectedBar: "100",
@@ -96,8 +101,7 @@ func BuiltinTheme(name string) (Theme, bool) {
 }
 
 func ResolveTheme(opts ThemeOptions) (Theme, error) {
-	env := themeEnv(opts.Env)
-	file, explicitFile := resolveThemeFile(opts.File, env, opts.SkipDefaultFile)
+	file, explicitFile := termtheme.ResolveThemeFile("passage", opts.File, opts.Env, opts.SkipDefaultFile)
 
 	var cfg ThemeConfig
 	if file != "" {
@@ -131,7 +135,7 @@ func ResolveTheme(opts ThemeOptions) (Theme, error) {
 			theme.Codes[role] = code
 		}
 	}
-	if opts.NoColor || envTruthy(env["PASSAGE_NO_COLOR"]) || env["NO_COLOR"] != "" {
+	if termtheme.EnvNoColor("passage", opts.Env, opts.NoColor) {
 		theme.NoColor = true
 	}
 	return theme.Normalized(), nil
@@ -185,64 +189,9 @@ func copyRoleCodes(codes map[Role]string) map[Role]string {
 }
 
 func ThemeConfigPath(file string, env []string) (string, error) {
-	path, _ := resolveThemeFile(file, themeEnv(env), false)
+	path, _ := termtheme.ResolveThemeFile("passage", file, env, false)
 	if path == "" {
 		return "", errors.New("could not resolve theme config path")
 	}
 	return path, nil
-}
-
-func resolveThemeFile(file string, env map[string]string, skipDefault bool) (string, bool) {
-	if strings.TrimSpace(file) != "" {
-		return expandThemePath(file), true
-	}
-	if value := strings.TrimSpace(env["PASSAGE_THEME_FILE"]); value != "" {
-		return expandThemePath(value), true
-	}
-	if skipDefault {
-		return "", false
-	}
-	configDir, err := os.UserConfigDir()
-	if err != nil || configDir == "" {
-		return "", false
-	}
-	return filepath.Join(configDir, "passage", "theme.conf"), false
-}
-
-func expandThemePath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
-}
-
-func themeEnv(env []string) map[string]string {
-	if env == nil {
-		env = os.Environ()
-	}
-	values := make(map[string]string, len(env))
-	for _, item := range env {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			values[key] = value
-		}
-	}
-	return values
-}
-
-func envTruthy(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
 }

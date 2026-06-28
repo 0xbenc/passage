@@ -104,9 +104,9 @@ func renderDirBrowse(m termnav.Model, theme pickerTheme, title string, selectFil
 	inner := width - 4
 	body := []string{dirBrowseLocationLine(m.Cwd(), inner, theme), dirBrowseFilterLine(m, inner, theme), ""}
 	body = append(body, dirBrowseListLines(m, inner, theme, selectFiles)...)
-	footer := "enter open/use folder   files shown for reference   type filter   esc cancel"
+	footer := termstyle.Footer([]termstyle.KeyHint{{Key: "enter", Label: "open/use folder"}, {Key: "", Label: "files shown for reference"}, {Key: "type", Label: "filter"}, {Key: "esc", Label: "cancel"}}, 0)
 	if selectFiles {
-		footer = "enter open folder / use folder / select file   type filter   esc cancel"
+		footer = termstyle.Footer([]termstyle.KeyHint{{Key: "enter", Label: "open folder"}, {Key: "", Label: "use folder"}, {Key: "", Label: "select file"}, {Key: "type", Label: "filter"}, {Key: "esc", Label: "cancel"}}, 0)
 	}
 	return renderWorkflowShell(theme, width, workflowShell{
 		Title:  strings.ToUpper(title),
@@ -174,7 +174,7 @@ func dirBrowseListLines(m termnav.Model, width int, theme pickerTheme, selectFil
 func dirBrowseRow(row termnav.Row, selected, filesSelectable bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
-		cursor = "> "
+		cursor = ">>"
 	}
 	badge := "[" + strings.ToUpper(badgeFor(row)) + "]"
 	line := cursor + termstyle.PadRight(badge, 6) + " " + termstyle.Sanitize(row.Title)

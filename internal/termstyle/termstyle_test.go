@@ -282,10 +282,11 @@ func TestDefaultThemeUsesPaletteCodes(t *testing.T) {
 		}
 	}
 
-	assertStyle(RoleTitle, "\x1b[32m")
+	assertStyle(RoleTitle, "\x1b[1;36m")
 	assertStyle(RolePrimary, "\x1b[36m")
-	assertStyle(RoleMuted, "\x1b[2m")
-	assertStyle(RoleSubtle, "\x1b[39m")
+	assertStyle(RoleMuted, "\x1b[90m")
+	assertStyle(RoleSubtle, "\x1b[2m")
+	assertStyle(RoleForeground, "\x1b[39m")
 	assertStyle(RoleBorder, "\x1b[1;32m")
 	assertStyle(RoleSelected, "\x1b[39;4m")
 

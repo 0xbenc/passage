@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termchrome"
+	"github.com/0xbenc/termtheme"
 )
 
 type workflowShell struct {
@@ -13,8 +15,15 @@ type workflowShell struct {
 	Danger bool
 }
 
+// renderWorkflowShell is passage's local shell composition over the shared
+// termchrome box geometry. The geometry (corners, divider, body padding, label
+// truncation) lives in termchrome; passage keeps the composition local and feeds
+// its own truncateStyled as the Truncator so the Sanitize-on-overflow policy
+// stays passage's. Output is byte-identical to the prior inline geometry (gated
+// by shell_test.go goldens + assertBorderIntegrity).
 func renderWorkflowShell(theme pickerTheme, width int, opts workflowShell) string {
 	width = max(48, width)
+	tt := termtheme.Theme(theme.theme)
 	var lines []string
 	titleRole := termstyle.RoleTitle
 	if opts.Danger {
@@ -24,66 +33,18 @@ func renderWorkflowShell(theme pickerTheme, width int, opts workflowShell) strin
 	if title == "" {
 		title = "passage"
 	}
-	lines = append(lines, workflowEdge(theme, "╭", "╮", theme.theme.Style(titleRole, title), width))
+	lines = append(lines, termchrome.Top(tt, theme.theme.Style(titleRole, title), width, truncateStyled))
 	for _, line := range opts.Body {
-		lines = append(lines, workflowLine(theme, line, width))
+		lines = append(lines, termchrome.Line(tt, line, width, truncateStyled))
 	}
 	if opts.Footer != "" {
-		lines = append(lines, workflowDivider(theme, width))
+		lines = append(lines, termchrome.Divider(tt, width))
 		for _, line := range strings.Split(strings.TrimRight(opts.Footer, "\n"), "\n") {
-			lines = append(lines, workflowLine(theme, theme.muted(line), width))
+			lines = append(lines, termchrome.Line(tt, theme.muted(line), width, truncateStyled))
 		}
 	}
-	lines = append(lines, workflowEdge(theme, "╰", "╯", "", width))
+	lines = append(lines, termchrome.Bottom(tt, width))
 	return strings.Join(lines, "\n") + "\n"
-}
-
-func renderCompactPicker(theme pickerTheme, width int, title string, body []string, footer string) string {
-	width = max(48, width)
-	var lines []string
-	header := theme.title(strings.TrimSpace(title))
-	if header == "" {
-		header = theme.title("PASSAGE")
-	}
-	lines = append(lines, termstyle.Truncate(header, width))
-	for _, line := range body {
-		lines = append(lines, termstyle.Truncate(line, width))
-	}
-	if footer != "" {
-		lines = append(lines, theme.muted(strings.Repeat("─", min(width, 80))))
-		for _, line := range strings.Split(footer, "\n") {
-			lines = append(lines, theme.muted(termstyle.Truncate(line, width)))
-		}
-	}
-	return strings.Join(lines, "\n") + "\n"
-}
-
-func workflowEdge(theme pickerTheme, left string, right string, label string, width int) string {
-	inner := max(0, width-2)
-	if inner == 0 {
-		return theme.theme.Style(termstyle.RoleBorder, left+right)
-	}
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return theme.theme.Style(termstyle.RoleBorder, left+strings.Repeat("─", inner)+right)
-	}
-	label = " " + truncateStyled(label, max(0, inner-2)) + " "
-	remaining := inner - termstyle.VisibleWidth(label)
-	if remaining < 0 {
-		remaining = 0
-	}
-	return theme.theme.Style(termstyle.RoleBorder, left) + label + theme.theme.Style(termstyle.RoleBorder, strings.Repeat("─", remaining)+right)
-}
-
-func workflowDivider(theme pickerTheme, width int) string {
-	inner := max(0, width-2)
-	return theme.theme.Style(termstyle.RoleBorder, "├"+strings.Repeat("─", inner)+"┤")
-}
-
-func workflowLine(theme pickerTheme, line string, width int) string {
-	inner := max(0, width-4)
-	content := termstyle.PadRight(truncateStyled(line, inner), inner)
-	return theme.theme.Style(termstyle.RoleBorder, "│ ") + content + theme.theme.Style(termstyle.RoleBorder, " │")
 }
 
 func truncateStyled(value string, width int) string {
@@ -93,7 +54,10 @@ func truncateStyled(value string, width int) string {
 	if termstyle.VisibleWidth(value) <= width {
 		return value
 	}
-	return termstyle.Truncate(termstyle.Strip(value), width)
+	// Sanitize (not just Strip) on the overflow path: it drops styling AND
+	// neutralizes raw C0/C1/DEL (incl. U+009B, the CSI introducer some terminals
+	// execute), so an oversized chrome label can never inject control bytes.
+	return termstyle.Truncate(termstyle.Sanitize(value), width)
 }
 
 func wrapText(value string, width int) []string {

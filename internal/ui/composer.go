@@ -7,6 +7,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/termstyle"
 	"github.com/0xbenc/termnav"
+	"github.com/0xbenc/termnav/render"
 )
 
 type composerMode int
@@ -301,9 +302,9 @@ func (c composerModel) footer() string {
 		}
 		return "tab complete  ↑↓ pick  enter next  ^G gen  esc cancel"
 	case stepSecret:
-		return "enter next  ^R " + c.revealLabel() + "  ^G generate  esc cancel"
+		return termstyle.Footer([]termstyle.KeyHint{{Key: "enter", Label: "next"}, {Key: "^R", Label: c.revealLabel()}, {Key: "^G", Label: "generate"}, {Key: "esc", Label: "cancel"}}, 0)
 	case stepConfirm:
-		return "enter save  ^R " + c.revealLabel() + "  esc cancel"
+		return termstyle.Footer([]termstyle.KeyHint{{Key: "enter", Label: "save"}, {Key: "^R", Label: c.revealLabel()}, {Key: "esc", Label: "cancel"}}, 0)
 	default:
 		return "↑/↓ length  s symbols  enter make  esc cancel"
 	}
@@ -563,7 +564,7 @@ func (c composerModel) candidateRow(dir, frag string, cand termnav.Candidate, in
 		glyph = "▸ "
 	}
 	if selected {
-		caret = "> "
+		caret = ">>"
 	}
 	prefixW := termstyle.VisibleWidth(caret + glyph)
 	gap := 1
@@ -579,7 +580,7 @@ func (c composerModel) candidateRow(dir, frag string, cand termnav.Candidate, in
 	if selected {
 		base, hl = theme.accent, theme.accent
 	}
-	styledName := highlightTitle(displayName, cand.Positions, nameWidth, base, hl)
+	styledName := render.HighlightMatches(displayName, cand.Positions, nameWidth, base, hl)
 	tag, warn := c.candidateTag(dir, frag, cand.Node)
 	pad := max(1, width-prefixW-termstyle.VisibleWidth(styledName)-termstyle.VisibleWidth(tag))
 	caretStyle, glyphStyle, tagStyle := theme.muted, theme.subtle, theme.muted

@@ -118,7 +118,8 @@ In the TUI:
 - `ctrl+y`: copy password, or TOTP in MFA-only mode
 - `ctrl+r`: reveal password, or TOTP in MFA-only mode
 - `ctrl+t`: show/copy TOTP, or reveal the stored secret on an MFA-secret row
-- `ctrl+p`: toggle pin
+- `P`: toggle pin (a shifted command, like `N`/`G`/`E`/`D`/`T`/`I`/`S`; lowercase still filters)
+- `ctrl+p` / `ctrl+n`: move the cursor up / down (also arrows)
 - `ctrl+f`: toggle MFA-only view
 - `ctrl+o`: open theme builder (also `passage theme`)
 - `ctrl+x`: clear clipboard

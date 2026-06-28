@@ -13,6 +13,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termnav/render"
 )
 
 type Action string
@@ -419,7 +420,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.trigger(m.primaryAction())
-		case "up":
+		case "up", "ctrl+p":
 			m.move(-1)
 		case "down", "ctrl+n":
 			m.move(1)
@@ -447,8 +448,6 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.trigger(defaultRevealAction(m.mfaOnly))
 		case "ctrl+t":
 			return m.trigger(m.ctrlTAction())
-		case "ctrl+p":
-			return m.trigger(ActionTogglePin)
 		case "ctrl+f":
 			m.mfaOnly = !m.mfaOnly
 			m.applyFilter()
@@ -483,6 +482,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.trigger(ActionImport)
 			case "S":
 				return m.trigger(ActionImportSecret)
+			case "P":
+				// Toggle pin moved off ctrl+p (now emacs cursor-up) to the
+				// shifted-command family alongside N/G/E/T/I/S/D.
+				return m.trigger(ActionTogglePin)
 			case "D":
 				if _, ok := m.selectedEntry(); ok {
 					return m.startConfirm(ActionRemove), nil
@@ -785,7 +788,7 @@ func helpLines(theme pickerTheme) []string {
 	var b []string
 	b = append(b, theme.accent("NAVIGATE"))
 	b = append(b, row("type", "fuzzy filter"))
-	b = append(b, row("up / down", "move cursor"))
+	b = append(b, row("up / down", "move cursor (also ^P / ^N)"))
 	b = append(b, row("pgup / pgdn", "page up / down"))
 	b = append(b, row("home / end", "jump to first / last"))
 	b = append(b, "", theme.accent("ACTIONS"))
@@ -793,7 +796,6 @@ func helpLines(theme pickerTheme) []string {
 	b = append(b, row("^Y", "copy password"))
 	b = append(b, row("^R", "reveal password"))
 	b = append(b, row("^T", "TOTP code, or reveal secret on an mfa row"))
-	b = append(b, row("^P", "toggle pin"))
 	b = append(b, "", theme.accent("WRITE & TRUST  (shifted — lowercase still filters)"))
 	b = append(b, row("N", "new entry (type or generate)"))
 	b = append(b, row("G", "generate a new entry"))
@@ -802,6 +804,7 @@ func helpLines(theme pickerTheme) []string {
 	b = append(b, row("T", "trust — make a read-only folder writable"))
 	b = append(b, row("I", "import + trust a folder of public keys"))
 	b = append(b, row("S", "import your secret key(s) — set up your identity"))
+	b = append(b, row("P", "toggle pin"))
 	b = append(b, "", theme.accent("VIEW & MANAGE"))
 	b = append(b, row("^F", "toggle mfa-only"))
 	b = append(b, row("^O", "theme editor"))
@@ -815,7 +818,7 @@ func helpLines(theme pickerTheme) []string {
 }
 
 func pickerFooterText() string {
-	return "type filter   arrows move   enter default   ^T totp   ? keys"
+	return termstyle.Footer([]termstyle.KeyHint{{Key: "type", Label: "filter"}, {Key: "arrows", Label: "move"}, {Key: "enter", Label: "default"}, {Key: "^T", Label: "totp"}, {Key: "?", Label: "keys"}}, 0)
 }
 
 func pickerShellStructuralLines(footer string) int {
@@ -949,7 +952,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 	selected := visibleIndex == m.cursor
 	caret := "  "
 	if selected {
-		caret = "> "
+		caret = ">>"
 	}
 	index := fmt.Sprintf("%3d ", visibleIndex+1)
 	markers := m.entryMarkers(entry) // "PIN MFA RO" plain, or ""
@@ -968,7 +971,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 		// bar background, so the fill spans the full inner width including
 		// the metadata column, while the match highlight still shows.
 		bar := func(s string) string { return theme.style(termstyle.RoleSelectedBar, s) }
-		title := highlightTitle(entry.Display, positions, leftWidth,
+		title := render.HighlightMatches(entry.Display, positions, leftWidth,
 			func(s string) string { return theme.onBar(termstyle.RoleSelected, s) },
 			func(s string) string { return theme.onBar(termstyle.RoleSearch, s) })
 		if pad := leftWidth - termstyle.VisibleWidth(title); pad > 0 {
@@ -988,7 +991,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 	}
 
 	leftPrefix := caret + theme.muted(index)
-	title := highlightTitle(entry.Display, positions, leftWidth, theme.primary, theme.search)
+	title := render.HighlightMatches(entry.Display, positions, leftWidth, theme.primary, theme.search)
 	var right strings.Builder
 	right.WriteString(strings.Repeat(" ", leftPad))
 	if sm := m.styledMarkers(entry, theme.accent, theme.warning); sm != "" {
@@ -1066,50 +1069,6 @@ func formatRemaining(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
 
-// highlightTitle truncates display to width cells and styles it: matched runes
-// (positions are rune indices into the full display) render with hl, the rest
-// with base. Each run is styled with a full Apply (open+reset), so styling can
-// never bleed across a run or past the truncation. With no positions it is
-// byte-identical to a single base-styled title, keeping the unfiltered view
-// unchanged.
-func highlightTitle(display string, positions []int, width int, base, hl func(string) string) string {
-	truncated := termstyle.Truncate(display, width)
-	if len(positions) == 0 {
-		return base(truncated)
-	}
-	keptStr := truncated
-	hasMarker := false
-	if termstyle.VisibleWidth(display) > width && strings.HasSuffix(truncated, "~") {
-		keptStr = strings.TrimSuffix(truncated, "~")
-		hasMarker = true
-	}
-	runes := []rune(keptStr)
-	matched := make([]bool, len(runes))
-	for _, p := range positions {
-		if p >= 0 && p < len(runes) {
-			matched[p] = true
-		}
-	}
-	var b strings.Builder
-	for i := 0; i < len(runes); {
-		j := i
-		for j < len(runes) && matched[j] == matched[i] {
-			j++
-		}
-		seg := string(runes[i:j])
-		if matched[i] {
-			b.WriteString(hl(seg))
-		} else {
-			b.WriteString(base(seg))
-		}
-		i = j
-	}
-	if hasMarker {
-		b.WriteString(base("~"))
-	}
-	return b.String()
-}
-
 // detailPane renders the side panel shown at wide widths: the selected entry's
 // full (Sanitized) path, its pin/MFA state, when it was last used, and the
 // primary action hints. It reads only already-loaded metadata — it never
@@ -1152,7 +1111,7 @@ func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
 		}
 	}
 	lines = append(lines, "")
-	for _, ln := range wrapText("enter copy · ^R reveal · ^T totp · ^P pin", width) {
+	for _, ln := range wrapText(termstyle.Footer([]termstyle.KeyHint{{Key: "enter", Label: "copy"}, {Key: "^R", Label: "reveal"}, {Key: "^T", Label: "totp"}, {Key: "P", Label: "pin"}}, 0), width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
 	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust · I import keys · S import secret", width) {
@@ -1586,7 +1545,7 @@ func (m pickerModel) confirmLines(width int, theme pickerTheme) []string {
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "confirm",
 		Body:   body,
-		Footer: "y confirm   esc cancel",
+		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "y", Label: "confirm"}, {Key: "esc", Label: "cancel"}}, 0),
 		Danger: true,
 	}))
 }
@@ -1642,7 +1601,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.modal = &pickerModal{
 			title:  defaultString(out.TextTitle, "passage"),
 			lines:  append([]string(nil), out.TextLines...),
-			footer: "up/down scroll  enter/esc close",
+			footer: termstyle.Footer([]termstyle.KeyHint{{Key: "up/down", Label: "scroll"}, {Key: "enter/esc", Label: "close"}}, 0),
 			scroll: true,
 		}
 	}
@@ -1728,7 +1687,7 @@ func (m pickerModel) busyLines(width int, theme pickerTheme) []string {
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "working",
 		Body:   body,
-		Footer: "esc cancel  ^C/^Q quit",
+		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "esc", Label: "cancel"}, {Key: "^C/^Q", Label: "quit"}}, 0),
 	}))
 }
 

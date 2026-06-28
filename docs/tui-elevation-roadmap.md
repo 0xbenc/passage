@@ -185,7 +185,7 @@ Phases are ordered by dependency. Within a phase, by impact-per-effort. Each cha
 │                                                                 │
 ├──────────────────────────────────────────────────────────────────┤
 │ type filters | arrows move | enter default | ^C/esc quit         │
-│ ^Y copy ^R reveal ^T totp/secret ^P pin ^F mfa ^O theme ^X clip…  │
+│ ^Y copy ^R reveal ^T totp/secret P pin ^F mfa ^O theme ^X clip…  │
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 Substring filter (`gh` would *not* match `github`). Caret-only selection. Static busy box. Frozen `"%ds remaining"`. 11-chord footer dump.
@@ -203,7 +203,7 @@ Substring filter (`gh` would *not* match `github`). Caret-only selection. Static
 │       ... 11 more below                   │  used  2 minutes ago               │
 │                                           │                                    │
 │                                           │  enter copy · ^R reveal · ^T totp  │
-│       ╭ decrypting ─────────────────────╮ │  ^P pin                            │
+│       ╭ decrypting ─────────────────────╮ │  P pin                            │
 │       │ ⠹  work/github   elapsed 2s/12s  │ │                                    │
 │       │ esc cancel                       │ │                                    │
 │       ╰──────────────────────────────────╯ │                                    │
