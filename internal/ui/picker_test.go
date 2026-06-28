@@ -12,6 +12,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termnav/render"
 )
 
 func manyEntries(n int) []passstore.Entry {
@@ -534,7 +535,7 @@ func TestPickerFuzzyFilterCrossesDelimiter(t *testing.T) {
 func TestHighlightTitleStylesMatchedRunes(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	// "work | github": g at rune 7, h at rune 10.
-	title := highlightTitle("work | github", []int{7, 10}, 40, theme.primary, theme.search)
+	title := render.HighlightMatches("work | github", []int{7, 10}, 40, theme.primary, theme.search)
 
 	if got := termstyle.Strip(title); got != "work | github" {
 		t.Fatalf("Strip(title) = %q, want plain title", got)
@@ -555,7 +556,7 @@ func TestHighlightTitleClipsPositionsPastTruncation(t *testing.T) {
 	theme := pickerTheme{theme: termstyle.TerminalTheme()}
 	// Width 8 keeps "work | " (7 cells) + "~"; the g/h at 7/10 are cut and
 	// must not be highlighted (nor index out of range).
-	title := highlightTitle("work | github", []int{7, 10}, 8, theme.primary, theme.search)
+	title := render.HighlightMatches("work | github", []int{7, 10}, 8, theme.primary, theme.search)
 	if got := termstyle.Strip(title); got != "work | ~" {
 		t.Fatalf("Strip(title) = %q, want \"work | ~\"", got)
 	}

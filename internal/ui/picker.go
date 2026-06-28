@@ -13,6 +13,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/termnav/render"
 )
 
 type Action string
@@ -968,7 +969,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 		// bar background, so the fill spans the full inner width including
 		// the metadata column, while the match highlight still shows.
 		bar := func(s string) string { return theme.style(termstyle.RoleSelectedBar, s) }
-		title := highlightTitle(entry.Display, positions, leftWidth,
+		title := render.HighlightMatches(entry.Display, positions, leftWidth,
 			func(s string) string { return theme.onBar(termstyle.RoleSelected, s) },
 			func(s string) string { return theme.onBar(termstyle.RoleSearch, s) })
 		if pad := leftWidth - termstyle.VisibleWidth(title); pad > 0 {
@@ -988,7 +989,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 	}
 
 	leftPrefix := caret + theme.muted(index)
-	title := highlightTitle(entry.Display, positions, leftWidth, theme.primary, theme.search)
+	title := render.HighlightMatches(entry.Display, positions, leftWidth, theme.primary, theme.search)
 	var right strings.Builder
 	right.WriteString(strings.Repeat(" ", leftPad))
 	if sm := m.styledMarkers(entry, theme.accent, theme.warning); sm != "" {
@@ -1064,50 +1065,6 @@ func formatRemaining(seconds int) string {
 		seconds = 0
 	}
 	return fmt.Sprintf("%ds", seconds)
-}
-
-// highlightTitle truncates display to width cells and styles it: matched runes
-// (positions are rune indices into the full display) render with hl, the rest
-// with base. Each run is styled with a full Apply (open+reset), so styling can
-// never bleed across a run or past the truncation. With no positions it is
-// byte-identical to a single base-styled title, keeping the unfiltered view
-// unchanged.
-func highlightTitle(display string, positions []int, width int, base, hl func(string) string) string {
-	truncated := termstyle.Truncate(display, width)
-	if len(positions) == 0 {
-		return base(truncated)
-	}
-	keptStr := truncated
-	hasMarker := false
-	if termstyle.VisibleWidth(display) > width && strings.HasSuffix(truncated, "~") {
-		keptStr = strings.TrimSuffix(truncated, "~")
-		hasMarker = true
-	}
-	runes := []rune(keptStr)
-	matched := make([]bool, len(runes))
-	for _, p := range positions {
-		if p >= 0 && p < len(runes) {
-			matched[p] = true
-		}
-	}
-	var b strings.Builder
-	for i := 0; i < len(runes); {
-		j := i
-		for j < len(runes) && matched[j] == matched[i] {
-			j++
-		}
-		seg := string(runes[i:j])
-		if matched[i] {
-			b.WriteString(hl(seg))
-		} else {
-			b.WriteString(base(seg))
-		}
-		i = j
-	}
-	if hasMarker {
-		b.WriteString(base("~"))
-	}
-	return b.String()
 }
 
 // detailPane renders the side panel shown at wide widths: the selected entry's

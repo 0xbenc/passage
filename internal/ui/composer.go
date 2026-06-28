@@ -7,6 +7,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/termstyle"
 	"github.com/0xbenc/termnav"
+	"github.com/0xbenc/termnav/render"
 )
 
 type composerMode int
@@ -579,7 +580,7 @@ func (c composerModel) candidateRow(dir, frag string, cand termnav.Candidate, in
 	if selected {
 		base, hl = theme.accent, theme.accent
 	}
-	styledName := highlightTitle(displayName, cand.Positions, nameWidth, base, hl)
+	styledName := render.HighlightMatches(displayName, cand.Positions, nameWidth, base, hl)
 	tag, warn := c.candidateTag(dir, frag, cand.Node)
 	pad := max(1, width-prefixW-termstyle.VisibleWidth(styledName)-termstyle.VisibleWidth(tag))
 	caretStyle, glyphStyle, tagStyle := theme.muted, theme.subtle, theme.muted
