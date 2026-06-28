@@ -1,7 +1,9 @@
 # TUI Interaction Contract
 
-> **Status: DRAFT** (prototyped on passage; to be reconciled against ssherpa's live-PTY
-> overlay + wizard surfaces and **frozen** in TUI-alignment phase P6.5).
+> **Status: FROZEN v1** (2026-06-28). Prototyped on passage, reconciled against ssherpa's
+> live-PTY overlay + wizard surfaces (P6.5): both already bind `esc`/`ctrl+c` in the same
+> cancel cases as `q`/`Q`, and the wizard already has emacs nav — so the grammar below is
+> feasible everywhere; ssherpa's P7 translation is "drop `q`/`Q`, add `ctrl+q`", not a redesign.
 > Canonical home: this file in the `passage` repo. `ssherpa` carries a pointer stub to it.
 > This is the **interaction source of truth** for both TUIs: any PR changing an
 > interactive surface must keep it and both apps conformant.
@@ -68,17 +70,19 @@ Pure *style* (box geometry, palette role values, footer grammar) lives in the sh
 | Theme editor | List caret `">>"`; arrows change; `esc` closes; key grammar as above. |
 | Wizard / step rail | **App-local UX** (see §6) — the step-rail *composition* stays per app; only the key grammar (nav + letter-free quit) is shared. |
 
-## 6. App-local (to be finalized in P6.5)
+## 6. App-local (reconciled P6.5)
 
-These surfaces exist in only one app today, so their detailed UX is reconciled against
-the real implementation before this contract is frozen, and the genuinely app-specific
-parts stay app-local:
+These surfaces exist in only one app today. The shared grammar (§1) applies; the
+genuinely app-specific parts below stay app-local:
 
-- **Live-PTY session overlay** (ssherpa): key/quit grammar and the bottom-strip paint
-  mechanics. The overlay must honor letter-free quit and `esc`=back; its raw-transcript
-  rendering keeps its own `Strip` overflow policy (not the trusted-chrome `Sanitize`).
-- **Multi-step wizard / step rail** (ssherpa): the `✓ ● ○` progress rail composition is
-  app-local; the navigation and quit grammar are shared.
+- **Live-PTY session overlay** (ssherpa, `internal/sessionview`): honors letter-free
+  quit and `esc`=back (it already binds `esc`/`ctrl+c` in the same cancel cases as the
+  `q`/`Q` being dropped). Its bottom-strip DECSC/DECRC paint mechanics and its
+  **raw-transcript `Strip` overflow policy** (NOT the trusted-chrome `Sanitize`) stay
+  app-local — a drift guard must never rewrite `truncateVisible` to `Sanitize`.
+- **Multi-step wizard / step rail** (ssherpa, `add_form`/`forward_builder`/`proxy_builder`):
+  the `✓ ● ○` progress-rail *composition* is app-local; the nav + letter-free quit grammar
+  is shared (the wizard already has emacs nav; P7 only drops `Q` and adds `ctrl+q`).
 
 ## 7. Non-goals / intentional divergences
 
