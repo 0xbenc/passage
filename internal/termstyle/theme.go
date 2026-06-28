@@ -34,12 +34,16 @@ func TerminalTheme() Theme {
 	return Theme{
 		Name: "terminal",
 		Codes: map[Role]string{
-			RoleTitle:       "32",
+			// Canonical terminal palette (TUI-alignment P5/K-a): Title/Muted/Subtle
+			// adopt ssherpa's values, fixing passage's self-collisions
+			// (Title==Success "32", Subtle==Foreground "39") and faint "2"-as-muted.
+			// RoleBorder stays bold-green "1;32" — passage's brand, not canonicalized (Q1).
+			RoleTitle:       "1;36",
 			RolePrimary:     "36",
 			RoleSecondary:   "34",
 			RoleAccent:      "33",
-			RoleMuted:       "2",
-			RoleSubtle:      "39",
+			RoleMuted:       "90",
+			RoleSubtle:      "2",
 			RoleForeground:  "39",
 			RoleSelected:    "39;4",
 			RoleSelectedBar: "100",

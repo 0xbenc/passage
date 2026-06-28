@@ -88,3 +88,12 @@ var (
 	ASCIIGlyphs   = termchrome.ASCIIGlyphs
 	UrgencyRole   = termchrome.UrgencyRole
 )
+
+// Footer grammar re-exported from termchrome: the canonical "key label / key
+// label" separator + "+N" overflow, replacing passage's hand-built footer
+// strings so both apps share one footer grammar.
+type KeyHint = termchrome.KeyHint
+
+const FooterSep = termchrome.FooterSep
+
+var Footer = termchrome.Footer

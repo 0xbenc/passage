@@ -302,9 +302,9 @@ func (c composerModel) footer() string {
 		}
 		return "tab complete  ↑↓ pick  enter next  ^G gen  esc cancel"
 	case stepSecret:
-		return "enter next  ^R " + c.revealLabel() + "  ^G generate  esc cancel"
+		return termstyle.Footer([]termstyle.KeyHint{{"enter", "next"}, {"^R", c.revealLabel()}, {"^G", "generate"}, {"esc", "cancel"}}, 0)
 	case stepConfirm:
-		return "enter save  ^R " + c.revealLabel() + "  esc cancel"
+		return termstyle.Footer([]termstyle.KeyHint{{"enter", "save"}, {"^R", c.revealLabel()}, {"esc", "cancel"}}, 0)
 	default:
 		return "↑/↓ length  s symbols  enter make  esc cancel"
 	}

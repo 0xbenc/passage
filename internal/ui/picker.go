@@ -816,7 +816,7 @@ func helpLines(theme pickerTheme) []string {
 }
 
 func pickerFooterText() string {
-	return "type filter   arrows move   enter default   ^T totp   ? keys"
+	return termstyle.Footer([]termstyle.KeyHint{{"type", "filter"}, {"arrows", "move"}, {"enter", "default"}, {"^T", "totp"}, {"?", "keys"}}, 0)
 }
 
 func pickerShellStructuralLines(footer string) int {
@@ -1109,7 +1109,7 @@ func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
 		}
 	}
 	lines = append(lines, "")
-	for _, ln := range wrapText("enter copy · ^R reveal · ^T totp · ^P pin", width) {
+	for _, ln := range wrapText(termstyle.Footer([]termstyle.KeyHint{{"enter", "copy"}, {"^R", "reveal"}, {"^T", "totp"}, {"^P", "pin"}}, 0), width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
 	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust · I import keys · S import secret", width) {
@@ -1543,7 +1543,7 @@ func (m pickerModel) confirmLines(width int, theme pickerTheme) []string {
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "confirm",
 		Body:   body,
-		Footer: "y confirm   esc cancel",
+		Footer: termstyle.Footer([]termstyle.KeyHint{{"y", "confirm"}, {"esc", "cancel"}}, 0),
 		Danger: true,
 	}))
 }
@@ -1599,7 +1599,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.modal = &pickerModal{
 			title:  defaultString(out.TextTitle, "passage"),
 			lines:  append([]string(nil), out.TextLines...),
-			footer: "up/down scroll  enter/esc close",
+			footer: termstyle.Footer([]termstyle.KeyHint{{"up/down", "scroll"}, {"enter/esc", "close"}}, 0),
 			scroll: true,
 		}
 	}
@@ -1685,7 +1685,7 @@ func (m pickerModel) busyLines(width int, theme pickerTheme) []string {
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "working",
 		Body:   body,
-		Footer: "esc cancel  ^C/^Q quit",
+		Footer: termstyle.Footer([]termstyle.KeyHint{{"esc", "cancel"}, {"^C/^Q", "quit"}}, 0),
 	}))
 }
 
