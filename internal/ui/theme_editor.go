@@ -245,9 +245,9 @@ func (m themeEditorModel) view(width int, theme pickerTheme) []string {
 	body := m.renderStatusLines(bodyWidth, theme)
 	body = append(body, "")
 	body = append(body, m.renderBody(bodyWidth, theme)...)
-	footer := termstyle.Footer([]termstyle.KeyHint{{"s", "save"}, {"arrows", "change"}, {"e", "edit raw"}, {"d", "inherit"}, {"r", "reset"}, {"t", "contrast"}, {"esc", "close"}}, 0)
+	footer := termstyle.Footer([]termstyle.KeyHint{{Key: "s", Label: "save"}, {Key: "arrows", Label: "change"}, {Key: "e", Label: "edit raw"}, {Key: "d", Label: "inherit"}, {Key: "r", Label: "reset"}, {Key: "t", Label: "contrast"}, {Key: "esc", Label: "close"}}, 0)
 	if m.editMode {
-		footer = termstyle.Footer([]termstyle.KeyHint{{"Enter", "accept"}, {"Esc", "cancel"}, {"Backspace", "edit"}, {"Ctrl-U", "clear"}}, 0)
+		footer = termstyle.Footer([]termstyle.KeyHint{{Key: "Enter", Label: "accept"}, {Key: "Esc", Label: "cancel"}, {Key: "Backspace", Label: "edit"}, {Key: "Ctrl-U", Label: "clear"}}, 0)
 	}
 	return splitRendered(renderWorkflowShell(theme, width, workflowShell{
 		Title:  "PASSAGE THEME BUILDER",
@@ -395,7 +395,7 @@ func (m themeEditorModel) renderPreviewLines(width int, theme pickerTheme) []str
 	lines = append(lines, splitRendered(renderWorkflowShell(picker, clamp(width, 54, 100), workflowShell{
 		Title:  "working",
 		Body:   []string{picker.primary("copying occdev/example/password"), picker.muted("This will return to the picker.")},
-		Footer: termstyle.Footer([]termstyle.KeyHint{{"esc", "cancel"}, {"^C/^Q", "quit"}}, 0),
+		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "esc", Label: "cancel"}, {Key: "^C/^Q", Label: "quit"}}, 0),
 	}))...)
 	lines = append(lines, m.renderPaletteLines(width, theme)...)
 	return lines

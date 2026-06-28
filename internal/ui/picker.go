@@ -818,7 +818,7 @@ func helpLines(theme pickerTheme) []string {
 }
 
 func pickerFooterText() string {
-	return termstyle.Footer([]termstyle.KeyHint{{"type", "filter"}, {"arrows", "move"}, {"enter", "default"}, {"^T", "totp"}, {"?", "keys"}}, 0)
+	return termstyle.Footer([]termstyle.KeyHint{{Key: "type", Label: "filter"}, {Key: "arrows", Label: "move"}, {Key: "enter", Label: "default"}, {Key: "^T", Label: "totp"}, {Key: "?", Label: "keys"}}, 0)
 }
 
 func pickerShellStructuralLines(footer string) int {
@@ -1111,7 +1111,7 @@ func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
 		}
 	}
 	lines = append(lines, "")
-	for _, ln := range wrapText(termstyle.Footer([]termstyle.KeyHint{{"enter", "copy"}, {"^R", "reveal"}, {"^T", "totp"}, {"P", "pin"}}, 0), width) {
+	for _, ln := range wrapText(termstyle.Footer([]termstyle.KeyHint{{Key: "enter", Label: "copy"}, {Key: "^R", Label: "reveal"}, {Key: "^T", Label: "totp"}, {Key: "P", Label: "pin"}}, 0), width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
 	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust · I import keys · S import secret", width) {
@@ -1545,7 +1545,7 @@ func (m pickerModel) confirmLines(width int, theme pickerTheme) []string {
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "confirm",
 		Body:   body,
-		Footer: termstyle.Footer([]termstyle.KeyHint{{"y", "confirm"}, {"esc", "cancel"}}, 0),
+		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "y", Label: "confirm"}, {Key: "esc", Label: "cancel"}}, 0),
 		Danger: true,
 	}))
 }
@@ -1601,7 +1601,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.modal = &pickerModal{
 			title:  defaultString(out.TextTitle, "passage"),
 			lines:  append([]string(nil), out.TextLines...),
-			footer: termstyle.Footer([]termstyle.KeyHint{{"up/down", "scroll"}, {"enter/esc", "close"}}, 0),
+			footer: termstyle.Footer([]termstyle.KeyHint{{Key: "up/down", Label: "scroll"}, {Key: "enter/esc", Label: "close"}}, 0),
 			scroll: true,
 		}
 	}
@@ -1687,7 +1687,7 @@ func (m pickerModel) busyLines(width int, theme pickerTheme) []string {
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
 		Title:  "working",
 		Body:   body,
-		Footer: termstyle.Footer([]termstyle.KeyHint{{"esc", "cancel"}, {"^C/^Q", "quit"}}, 0),
+		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "esc", Label: "cancel"}, {Key: "^C/^Q", Label: "quit"}}, 0),
 	}))
 }
 

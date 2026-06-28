@@ -110,7 +110,7 @@ func (m textModel) View() tea.View {
 	view := tea.NewView(renderWorkflowShell(theme, width, workflowShell{
 		Title:  m.title,
 		Body:   body,
-		Footer: termstyle.Footer([]termstyle.KeyHint{{"up/down", "scroll"}, {"enter/q", "close"}}, 0),
+		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "up/down", Label: "scroll"}, {Key: "enter/q", Label: "close"}}, 0),
 	}))
 	view.AltScreen = !m.noAltScreen
 	return view
