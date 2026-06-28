@@ -1,6 +1,9 @@
 package termstyle
 
-import "github.com/0xbenc/termtheme"
+import (
+	"github.com/0xbenc/termchrome"
+	"github.com/0xbenc/termtheme"
+)
 
 // This package is passage's thin adapter over the shared termtheme engine. The
 // cross-compat-critical data layer — the semantic roles, the theme.conf parser,
@@ -71,3 +74,17 @@ func ExportTheme(cfg ThemeConfig, base Theme, app, version string) []byte {
 
 // ImportTheme parses a portable .theme file into a config plus its metadata.
 var ImportTheme = termtheme.Unmarshal
+
+// Glyphs + countdown are re-exported from termchrome (passage's spinner/progress
+// + TOTP urgency widgets now live in the shared module). GlyphSet is an alias so
+// its Frame/Bar methods come for free; UrgencyRole returns a termtheme.Role
+// (== Role here).
+type GlyphSet = termchrome.GlyphSet
+
+var (
+	ResolveGlyphs = termchrome.ResolveGlyphs
+	DefaultGlyphs = termchrome.DefaultGlyphs
+	UnicodeGlyphs = termchrome.UnicodeGlyphs
+	ASCIIGlyphs   = termchrome.ASCIIGlyphs
+	UrgencyRole   = termchrome.UrgencyRole
+)
