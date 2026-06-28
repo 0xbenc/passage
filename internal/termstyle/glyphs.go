@@ -1,6 +1,10 @@
 package termstyle
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/0xbenc/termtheme"
+)
 
 // GlyphSet is the set of decorative runes the UI animates with — spinner
 // frames and progress-bar cells. It exists so motion never renders as mojibake
@@ -64,7 +68,7 @@ func ResolveGlyphs(env []string) GlyphSet {
 }
 
 func localeIsUTF8(env []string) bool {
-	vals := themeEnv(env)
+	vals := termtheme.EnvMap(env)
 	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
 		v := strings.ToLower(strings.TrimSpace(vals[key]))
 		if v == "" {
