@@ -386,7 +386,7 @@ func (m themeEditorModel) renderPreviewLines(width int, theme pickerTheme) []str
 		picker.title("PASSAGE") + " " + picker.pill("DEV"),
 		picker.muted(termstyle.Truncate("92 entries  /home/xbenc/.password-store", width)),
 		picker.primary("/prod") + "  " + picker.counter(12, 92),
-		picker.accent("> ") + picker.muted("  1 ") + picker.selected("occdev | gitea | token | password") + "  " + picker.accent("*") + " " + picker.muted("06-12 19:57"),
+		picker.accent(">>") + picker.muted("  1 ") + picker.selected("occdev | gitea | token | password") + "  " + picker.accent("*") + " " + picker.muted("06-12 19:57"),
 		"  " + picker.muted("  2 ") + picker.primary("pp | github | 0xbenc | mfa") + "  " + picker.accent("mfa") + " " + picker.muted("never"),
 		picker.success("Password copied to clipboard (osc52)."),
 		picker.warning("Clipboard copy failed: xclip failed"),

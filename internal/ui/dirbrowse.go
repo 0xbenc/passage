@@ -174,7 +174,7 @@ func dirBrowseListLines(m termnav.Model, width int, theme pickerTheme, selectFil
 func dirBrowseRow(row termnav.Row, selected, filesSelectable bool, width int, theme pickerTheme) string {
 	cursor := "  "
 	if selected {
-		cursor = "> "
+		cursor = ">>"
 	}
 	badge := "[" + strings.ToUpper(badgeFor(row)) + "]"
 	line := cursor + termstyle.PadRight(badge, 6) + " " + termstyle.Sanitize(row.Title)

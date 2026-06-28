@@ -420,7 +420,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.trigger(m.primaryAction())
-		case "up":
+		case "up", "ctrl+p":
 			m.move(-1)
 		case "down", "ctrl+n":
 			m.move(1)
@@ -448,8 +448,6 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.trigger(defaultRevealAction(m.mfaOnly))
 		case "ctrl+t":
 			return m.trigger(m.ctrlTAction())
-		case "ctrl+p":
-			return m.trigger(ActionTogglePin)
 		case "ctrl+f":
 			m.mfaOnly = !m.mfaOnly
 			m.applyFilter()
@@ -484,6 +482,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.trigger(ActionImport)
 			case "S":
 				return m.trigger(ActionImportSecret)
+			case "P":
+				// Toggle pin moved off ctrl+p (now emacs cursor-up) to the
+				// shifted-command family alongside N/G/E/T/I/S/D.
+				return m.trigger(ActionTogglePin)
 			case "D":
 				if _, ok := m.selectedEntry(); ok {
 					return m.startConfirm(ActionRemove), nil
@@ -786,7 +788,7 @@ func helpLines(theme pickerTheme) []string {
 	var b []string
 	b = append(b, theme.accent("NAVIGATE"))
 	b = append(b, row("type", "fuzzy filter"))
-	b = append(b, row("up / down", "move cursor"))
+	b = append(b, row("up / down", "move cursor (also ^P / ^N)"))
 	b = append(b, row("pgup / pgdn", "page up / down"))
 	b = append(b, row("home / end", "jump to first / last"))
 	b = append(b, "", theme.accent("ACTIONS"))
@@ -794,7 +796,6 @@ func helpLines(theme pickerTheme) []string {
 	b = append(b, row("^Y", "copy password"))
 	b = append(b, row("^R", "reveal password"))
 	b = append(b, row("^T", "TOTP code, or reveal secret on an mfa row"))
-	b = append(b, row("^P", "toggle pin"))
 	b = append(b, "", theme.accent("WRITE & TRUST  (shifted — lowercase still filters)"))
 	b = append(b, row("N", "new entry (type or generate)"))
 	b = append(b, row("G", "generate a new entry"))
@@ -803,6 +804,7 @@ func helpLines(theme pickerTheme) []string {
 	b = append(b, row("T", "trust — make a read-only folder writable"))
 	b = append(b, row("I", "import + trust a folder of public keys"))
 	b = append(b, row("S", "import your secret key(s) — set up your identity"))
+	b = append(b, row("P", "toggle pin"))
 	b = append(b, "", theme.accent("VIEW & MANAGE"))
 	b = append(b, row("^F", "toggle mfa-only"))
 	b = append(b, row("^O", "theme editor"))
@@ -950,7 +952,7 @@ func (m pickerModel) renderEntryLine(entry passstore.Entry, positions []int, vis
 	selected := visibleIndex == m.cursor
 	caret := "  "
 	if selected {
-		caret = "> "
+		caret = ">>"
 	}
 	index := fmt.Sprintf("%3d ", visibleIndex+1)
 	markers := m.entryMarkers(entry) // "PIN MFA RO" plain, or ""
@@ -1109,7 +1111,7 @@ func (m pickerModel) detailPane(width int, theme pickerTheme) []string {
 		}
 	}
 	lines = append(lines, "")
-	for _, ln := range wrapText(termstyle.Footer([]termstyle.KeyHint{{"enter", "copy"}, {"^R", "reveal"}, {"^T", "totp"}, {"^P", "pin"}}, 0), width) {
+	for _, ln := range wrapText(termstyle.Footer([]termstyle.KeyHint{{"enter", "copy"}, {"^R", "reveal"}, {"^T", "totp"}, {"P", "pin"}}, 0), width) {
 		lines = append(lines, theme.muted(termstyle.Truncate(ln, width)))
 	}
 	for _, ln := range wrapText("N new · G generate · E edit · D delete · T trust · I import keys · S import secret", width) {

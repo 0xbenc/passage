@@ -413,7 +413,7 @@ func TestComposerPathRenderNoMatchHint(t *testing.T) {
 func TestComposerPathRenderSelectionCaret(t *testing.T) {
 	c := newComposer(composePassword, fixturePaths)
 	out := renderPathStrip(c.update("down", ""))
-	if !strings.Contains(out, "> ") {
+	if !strings.Contains(out, ">>") {
 		t.Fatalf("selection caret missing:\n%s", out)
 	}
 }

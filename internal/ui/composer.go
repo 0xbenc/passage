@@ -564,7 +564,7 @@ func (c composerModel) candidateRow(dir, frag string, cand termnav.Candidate, in
 		glyph = "▸ "
 	}
 	if selected {
-		caret = "> "
+		caret = ">>"
 	}
 	prefixW := termstyle.VisibleWidth(caret + glyph)
 	gap := 1
