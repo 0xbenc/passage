@@ -93,7 +93,10 @@ func truncateStyled(value string, width int) string {
 	if termstyle.VisibleWidth(value) <= width {
 		return value
 	}
-	return termstyle.Truncate(termstyle.Strip(value), width)
+	// Sanitize (not just Strip) on the overflow path: it drops styling AND
+	// neutralizes raw C0/C1/DEL (incl. U+009B, the CSI introducer some terminals
+	// execute), so an oversized chrome label can never inject control bytes.
+	return termstyle.Truncate(termstyle.Sanitize(value), width)
 }
 
 func wrapText(value string, width int) []string {
