@@ -544,3 +544,53 @@ func TestThemeImportFromSsherpaFillsMissingRole(t *testing.T) {
 		t.Fatalf("selected_bar rendered plain; should be filled from passage's vivid base")
 	}
 }
+
+// TestIntroDecision is the truth table for the pure intro gate (no TTY check):
+// flag/env precedence first, then the once-per-version default. shouldPlayIntro
+// only layers the TTY requirement on top, which is why the decision is factored
+// out here.
+func TestIntroDecision(t *testing.T) {
+	cases := []struct {
+		name        string
+		flags       commonFlags
+		env         []string
+		lastVersion string
+		build       string
+		want        bool
+	}{
+		{name: "same version, no flags => skip", lastVersion: "1.0.0", build: "1.0.0", want: false},
+		{name: "new version => play", lastVersion: "0.9.0", build: "1.0.0", want: true},
+		{name: "never seen => play", lastVersion: "", build: "1.0.0", want: true},
+		{name: "dev unchanged => skip", lastVersion: "dev", build: "dev", want: false},
+		{name: "--intro forces on same version", flags: commonFlags{intro: true}, lastVersion: "1.0.0", build: "1.0.0", want: true},
+		{name: "--no-intro suppresses new version", flags: commonFlags{noIntro: true}, lastVersion: "0.9.0", build: "1.0.0", want: false},
+		{name: "--no-intro beats --intro", flags: commonFlags{noIntro: true, intro: true}, lastVersion: "0.9.0", build: "1.0.0", want: false},
+		{name: "PASSAGE_INTRO_ALWAYS forces on same version", env: []string{"PASSAGE_INTRO_ALWAYS=1"}, lastVersion: "1.0.0", build: "1.0.0", want: true},
+		{name: "PASSAGE_NO_INTRO suppresses new version", env: []string{"PASSAGE_NO_INTRO=true"}, lastVersion: "0.9.0", build: "1.0.0", want: false},
+		{name: "PASSAGE_NO_INTRO beats PASSAGE_INTRO_ALWAYS", env: []string{"PASSAGE_NO_INTRO=1", "PASSAGE_INTRO_ALWAYS=1"}, lastVersion: "0.9.0", build: "1.0.0", want: false},
+		{name: "falsy PASSAGE_NO_INTRO is ignored", env: []string{"PASSAGE_NO_INTRO=0"}, lastVersion: "0.9.0", build: "1.0.0", want: true},
+		{name: "--no-intro beats PASSAGE_INTRO_ALWAYS", flags: commonFlags{noIntro: true}, env: []string{"PASSAGE_INTRO_ALWAYS=1"}, lastVersion: "1.0.0", build: "1.0.0", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := introDecision(tc.flags, tc.env, tc.lastVersion, tc.build); got != tc.want {
+				t.Fatalf("introDecision = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIntroVersionLabel pins the bottom-road-band label formatting.
+func TestIntroVersionLabel(t *testing.T) {
+	cases := map[string]string{
+		"":      "dev",
+		"dev":   "dev",
+		"1.2.3": "v1.2.3",
+		"2.0":   "v2.0",
+	}
+	for in, want := range cases {
+		if got := introVersionLabel(in); got != want {
+			t.Fatalf("introVersionLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
