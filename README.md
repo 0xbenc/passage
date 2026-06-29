@@ -1,5 +1,7 @@
 # passage
 
+> **Part of [termsystem](https://github.com/0xbenc/termsystem)** — the shared terminal-UI ecosystem (`termtheme` · `termnav` · `termchrome` · `termintro` powering `passage` · `ssherpa` · `dangit`). The ecosystem map, dependency graph, and the agent guide ([AGENTS.md](https://github.com/0xbenc/termsystem/blob/main/AGENTS.md)) live there.
+
 [![CI](https://github.com/0xbenc/passage/actions/workflows/ci.yml/badge.svg)](https://github.com/0xbenc/passage/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/0xbenc/passage?sort=semver)](https://github.com/0xbenc/passage/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.26.3-00ADD8.svg)](go.mod)
