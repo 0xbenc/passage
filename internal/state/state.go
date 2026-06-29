@@ -22,8 +22,9 @@ type Record struct {
 }
 
 type State struct {
-	SchemaVersion int      `json:"schema_version"`
-	Records       []Record `json:"records"`
+	SchemaVersion    int      `json:"schema_version"`
+	Records          []Record `json:"records"`
+	LastIntroVersion string   `json:"last_intro_version,omitempty"`
 }
 
 type LoadResult struct {
@@ -133,6 +134,10 @@ func (s *State) SetPinned(path string, pinned bool) {
 	s.Records[idx].Pinned = pinned
 }
 
+func (s *State) SetLastIntroVersion(version string) {
+	s.LastIntroVersion = version
+}
+
 func (s *State) TogglePinned(path string) bool {
 	idx := s.index(path)
 	if idx < 0 {
@@ -165,7 +170,9 @@ func (s State) index(path string) int {
 }
 
 func (s State) normalized() State {
-	out := State{SchemaVersion: SchemaVersion}
+	// LastIntroVersion is a top-level field, not derived from Records, so it must
+	// be carried through here or it would be dropped on every Load/Save.
+	out := State{SchemaVersion: SchemaVersion, LastIntroVersion: s.LastIntroVersion}
 	seen := map[string]int{}
 	for _, record := range s.Records {
 		record.Path = strings.TrimSpace(record.Path)

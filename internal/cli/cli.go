@@ -23,6 +23,9 @@ import (
 	"github.com/0xbenc/passage/internal/termstyle"
 	"github.com/0xbenc/passage/internal/totp"
 	"github.com/0xbenc/passage/internal/ui"
+	"github.com/0xbenc/termintro"
+	"github.com/0xbenc/termtheme"
+	"github.com/charmbracelet/x/term"
 )
 
 const usage = `Usage:
@@ -202,6 +205,8 @@ type commonFlags struct {
 	noColor     bool
 	noAltScreen bool
 	themeFile   string
+	noIntro     bool // --no-intro: suppress the startup intro this run
+	intro       bool // --intro: force the startup intro this run
 }
 
 type runtimeState struct {
@@ -371,6 +376,25 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		}
 		themeWarning += warning
 	}
+	// Startup intro: play once per version on an interactive launch, after the
+	// theme is resolved and after the single-match auto-action short-circuit (so
+	// non-interactive / auto-copy runs never see it), immediately before the
+	// picker loop. It renders to stderr to keep stdout clean.
+	if r.shouldPlayIntro(flags, rt.state.LastIntroVersion) {
+		termintro.Play(termintro.Options{
+			Title:   "PASSAGE",
+			Tagline: "the keeper of your secrets",
+			Credits: []string{"0xbenc"},
+			Version: introVersionLabel(r.build.Version),
+			Output:  r.stderr,
+			NoColor: termtheme.EnvNoColor("passage", r.env, flags.noColor),
+		})
+		rt.state.SetLastIntroVersion(r.build.Version)
+		if err := rt.state.Save(rt.statePath); err != nil {
+			fmt.Fprintf(r.stderr, "passage: warning: could not save intro state: %v\n", err)
+		}
+	}
+
 	// Pattern A: the picker runs as its own program; a terminal-grabbing action
 	// (edit / trust) quits returning a request, which we run here with the
 	// program torn down (the real tty restored) before relaunching the picker.
@@ -442,6 +466,41 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 			return 1
 		}
 	}
+}
+
+// shouldPlayIntro decides whether to play the startup intro this run. The intro
+// (and the picker) render to stderr, so it first requires an interactive stderr;
+// the rest of the precedence is the pure introDecision so it can be unit-tested
+// without a TTY.
+func (r runner) shouldPlayIntro(flags commonFlags, lastVersion string) bool {
+	if !term.IsTerminal(os.Stderr.Fd()) {
+		return false
+	}
+	return introDecision(flags, r.env, lastVersion, r.build.Version)
+}
+
+// introDecision is the pure (TTY-independent) intro gate. Precedence: explicit
+// suppression wins (--no-intro / PASSAGE_NO_INTRO), then explicit force
+// (--intro / PASSAGE_INTRO_ALWAYS), then the once-per-version default (play only
+// when the last version the intro ran for differs from this build).
+func introDecision(flags commonFlags, env []string, lastVersion, buildVersion string) bool {
+	values := termtheme.EnvMap(env)
+	if flags.noIntro || termtheme.EnvTruthy(values["PASSAGE_NO_INTRO"]) {
+		return false
+	}
+	if flags.intro || termtheme.EnvTruthy(values["PASSAGE_INTRO_ALWAYS"]) {
+		return true
+	}
+	return lastVersion != buildVersion
+}
+
+// introVersionLabel formats a build version for the intro's bottom road band:
+// the unset/"dev" build shows as "dev", a real version as "v<version>".
+func introVersionLabel(v string) string {
+	if v == "" || v == "dev" {
+		return "dev"
+	}
+	return "v" + v
 }
 
 // gapEdit runs `pass edit` ($EDITOR) for the selected entry with the picker torn
@@ -2343,6 +2402,8 @@ func parseCommon(args []string) (commonFlags, []string, error) {
 	flags.json = consumeBoolFlag(&rest, "--json")
 	flags.noColor = consumeBoolFlag(&rest, "--no-color")
 	flags.noAltScreen = consumeBoolFlag(&rest, "--no-alt-screen")
+	flags.noIntro = consumeBoolFlag(&rest, "--no-intro")
+	flags.intro = consumeBoolFlag(&rest, "--intro")
 	return flags, rest, nil
 }
 
