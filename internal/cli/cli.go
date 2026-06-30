@@ -207,6 +207,8 @@ type commonFlags struct {
 	themeFile   string
 	noIntro     bool // --no-intro: suppress the startup intro this run
 	intro       bool // --intro: force the startup intro this run
+	noSyncCheck bool // --no-sync-check: skip the startup store-drift check
+	syncCheck   bool // --sync-check: force the startup store-drift check
 }
 
 type runtimeState struct {
@@ -395,6 +397,14 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 		}
 	}
 
+	// Startup store-drift check: on the first picker launch, ask dangit (async,
+	// in the model) whether the git-backed store has drifted from its remote, so
+	// secrets pushed elsewhere surface a "pull?" prompt. Gated like the intro and
+	// run only on the first launch (not on Pattern-A relaunches).
+	runSync := r.shouldRunSyncCheck(flags)
+	driftCheck := r.driftCheckFunc(rt.storeDir)
+	firstLaunch := true
+
 	// Pattern A: the picker runs as its own program; a terminal-grabbing action
 	// (edit / trust) quits returning a request, which we run here with the
 	// program torn down (the real tty restored) before relaunching the picker.
@@ -402,6 +412,10 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 	message := ""
 	messageErr := false
 	for {
+		var driftOpt func(context.Context) passstore.DriftStatus
+		if runSync && firstLaunch {
+			driftOpt = driftCheck
+		}
 		// Snapshot the inputs the async LoadAccess reads, so its goroutine never
 		// races RunAction's in-place mutation of rt. refreshInteractive replaces
 		// rt.entries with a fresh slice rather than mutating this one, so the
@@ -439,7 +453,9 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 			LoadAccess: func(loadCtx context.Context) map[string]string {
 				return computeAccess(loadCtx, accessStore, accessEntries)
 			},
+			DriftCheck: driftOpt,
 		})
+		firstLaunch = false
 		if err != nil {
 			fmt.Fprintf(r.stderr, "passage: %v\n", err)
 			return 1
@@ -492,6 +508,50 @@ func introDecision(flags commonFlags, env []string, lastVersion, buildVersion st
 		return true
 	}
 	return lastVersion != buildVersion
+}
+
+// shouldRunSyncCheck gates the startup store-drift check to an interactive TTY,
+// then defers to syncCheckDecision. Like the intro, the picker renders to
+// stderr, so the stderr TTY is the right gate.
+func (r runner) shouldRunSyncCheck(flags commonFlags) bool {
+	if !term.IsTerminal(os.Stderr.Fd()) {
+		return false
+	}
+	return syncCheckDecision(flags, r.env)
+}
+
+// syncCheckDecision is the pure (TTY-independent) sync-check gate. Unlike the
+// intro it defaults ON (a drifted store is worth surfacing every run): explicit
+// suppression wins (--no-sync-check / PASSAGE_NO_SYNC_CHECK), then explicit force
+// (--sync-check / PASSAGE_SYNC_CHECK_ALWAYS), then the default of true.
+func syncCheckDecision(flags commonFlags, env []string) bool {
+	values := termtheme.EnvMap(env)
+	if flags.noSyncCheck || termtheme.EnvTruthy(values["PASSAGE_NO_SYNC_CHECK"]) {
+		return false
+	}
+	if flags.syncCheck || termtheme.EnvTruthy(values["PASSAGE_SYNC_CHECK_ALWAYS"]) {
+		return true
+	}
+	return true
+}
+
+// driftCheckTimeout bounds the whole dangit subprocess. dangit's own
+// --timeout-secs does not reliably cap an unreachable HTTPS remote, so passage
+// imposes this outer deadline; the check runs asynchronously, so hitting it just
+// means the prompt never appears (the store stays usable either way).
+const driftCheckTimeout = 8 * time.Second
+
+// driftCheckFunc builds the async store-drift probe handed to the picker: it
+// shells out to dangit (bounded by driftCheckTimeout) and classifies the
+// store's relationship to its remote. Resolving the dangit binary once here
+// keeps the per-launch closure cheap.
+func (r runner) driftCheckFunc(storeDir string) func(context.Context) passstore.DriftStatus {
+	dangitBinary := passstore.ResolveDangitBinary(r.env)
+	return func(loadCtx context.Context) passstore.DriftStatus {
+		checkCtx, cancel := context.WithTimeout(loadCtx, driftCheckTimeout)
+		defer cancel()
+		return passstore.CheckDrift(checkCtx, dangitBinary, storeDir, r.env)
+	}
 }
 
 // introVersionLabel formats a build version for the intro's bottom road band:
@@ -2058,6 +2118,15 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 			return ui.ActionOutcome{Err: err}
 		}
 		return ui.ActionOutcome{Message: "Removed " + req.Entry.Path + ".", Entries: entries}
+	case ui.ActionPull:
+		if err := rt.store.GitPull(ctx); err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		entries, err := r.refreshInteractive(rt, flags)
+		if err != nil {
+			return ui.ActionOutcome{Err: err}
+		}
+		return ui.ActionOutcome{Message: "Pulled latest from remote.", Entries: entries}
 	case ui.ActionCopy:
 		msg, tool, err := r.copyEntry(ctx, *rt, req.Entry.Path, false)
 		if err != nil {
@@ -2116,10 +2185,14 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 func interactiveActionError(ctx context.Context, req ui.ActionRequest, err error) error {
 	verb := interactiveActionVerb(req.Action)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		if req.Entry.Path == "" {
-			return fmt.Errorf("%s timed out after %s", verb, interactiveActionTimeout)
+		timeout := interactiveActionTimeout
+		if ui.IsWriteAction(req.Action) {
+			timeout = writeActionTimeout
 		}
-		return fmt.Errorf("%s %s timed out after %s; try `pass show -- %s` once outside passage to unlock or diagnose GPG", verb, req.Entry.Path, interactiveActionTimeout, req.Entry.Path)
+		if req.Entry.Path == "" {
+			return fmt.Errorf("%s timed out after %s", verb, timeout)
+		}
+		return fmt.Errorf("%s %s timed out after %s; try `pass show -- %s` once outside passage to unlock or diagnose GPG", verb, req.Entry.Path, timeout, req.Entry.Path)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		if req.Entry.Path == "" {
@@ -2152,6 +2225,8 @@ func interactiveActionVerb(action ui.Action) string {
 		return "generate"
 	case ui.ActionRemove:
 		return "remove"
+	case ui.ActionPull:
+		return "store pull"
 	case ui.ActionDoctor:
 		return "doctor"
 	case ui.ActionKeys:
@@ -2404,6 +2479,8 @@ func parseCommon(args []string) (commonFlags, []string, error) {
 	flags.noAltScreen = consumeBoolFlag(&rest, "--no-alt-screen")
 	flags.noIntro = consumeBoolFlag(&rest, "--no-intro")
 	flags.intro = consumeBoolFlag(&rest, "--intro")
+	flags.noSyncCheck = consumeBoolFlag(&rest, "--no-sync-check")
+	flags.syncCheck = consumeBoolFlag(&rest, "--sync-check")
 	return flags, rest, nil
 }
 

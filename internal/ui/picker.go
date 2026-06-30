@@ -36,6 +36,7 @@ const (
 	ActionTrust          Action = "trust"
 	ActionImport         Action = "import"
 	ActionImportSecret   Action = "import_secret"
+	ActionPull           Action = "pull"
 	ActionQuit           Action = "quit"
 )
 
@@ -52,7 +53,7 @@ func isGapAction(action Action) bool {
 // outlast the read timeout).
 func IsWriteAction(action Action) bool {
 	switch action {
-	case ActionNew, ActionGenerate, ActionRemove:
+	case ActionNew, ActionGenerate, ActionRemove, ActionPull:
 		return true
 	default:
 		return false
@@ -90,6 +91,11 @@ type PickOptions struct {
 	// (writable/read_only/no_access). It runs asynchronously after launch so the
 	// cold start stays instant on a large store; badges appear once it returns.
 	LoadAccess func(context.Context) map[string]string
+	// DriftCheck reports whether the git-backed store has drifted from its
+	// remote (via the external dangit CLI). When set, it runs once asynchronously
+	// after launch; a "behind" result opens the sync confirm, a "stale"/local
+	// result shows a notice. Nil disables the check entirely.
+	DriftCheck func(context.Context) passstore.DriftStatus
 }
 
 type PickResult struct {
@@ -213,10 +219,15 @@ type pickerModel struct {
 	composer       *composerModel
 	access         map[string]string // entry path -> write verdict (async-loaded)
 	loadAccess     func(context.Context) map[string]string
+	driftCheck     func(context.Context) passstore.DriftStatus
+	interacted     bool // a key has been pressed (the async drift prompt must not grab focus mid-type)
 }
 
 // accessLoadedMsg delivers the asynchronously-computed write verdicts.
 type accessLoadedMsg struct{ access map[string]string }
+
+// driftCheckedMsg delivers the asynchronous store-drift verdict.
+type driftCheckedMsg struct{ status passstore.DriftStatus }
 
 // clipState tracks an armed clipboard: which tool holds it and when the
 // auto-clear fires. Recomputed from the wall clock, never holds the secret.
@@ -236,12 +247,16 @@ type pickerBusy struct {
 	started   time.Time
 }
 
-// pickerConfirm is a pending destructive action awaiting a y/esc confirmation,
-// so a single chord can no longer wipe curated state (pins / recents).
+// pickerConfirm is a pending action awaiting a y/esc confirmation, so a single
+// chord can no longer wipe curated state (pins / recents) and a startup sync can
+// ask before touching the store. title/danger style the box: destructive
+// confirms are danger-red ("confirm"); the benign sync prompt is not ("sync").
 type pickerConfirm struct {
 	action Action
 	prompt string
 	detail string
+	title  string
+	danger bool
 }
 
 type pickerModal struct {
@@ -311,6 +326,7 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		glyphs:         opts.Glyphs,
 		clearClipboard: opts.ClearClipboard,
 		loadAccess:     opts.LoadAccess,
+		driftCheck:     opts.DriftCheck,
 	}
 	if len(model.glyphs.Spinner) == 0 {
 		model.glyphs = termstyle.DefaultGlyphs()
@@ -329,10 +345,17 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 }
 
 func (m pickerModel) Init() tea.Cmd {
+	cmds := []tea.Cmd{tea.RequestWindowSize}
 	if m.loadAccess != nil {
-		return tea.Batch(tea.RequestWindowSize, m.loadAccessCmd())
+		cmds = append(cmds, m.loadAccessCmd())
 	}
-	return tea.RequestWindowSize
+	if m.driftCheck != nil {
+		cmds = append(cmds, m.driftCheckCmd())
+	}
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m pickerModel) loadAccessCmd() tea.Cmd {
@@ -340,6 +363,14 @@ func (m pickerModel) loadAccessCmd() tea.Cmd {
 	ctx := m.ctx
 	return func() tea.Msg {
 		return accessLoadedMsg{access: load(ctx)}
+	}
+}
+
+func (m pickerModel) driftCheckCmd() tea.Cmd {
+	check := m.driftCheck
+	ctx := m.ctx
+	return func() tea.Msg {
+		return driftCheckedMsg{status: check(ctx)}
 	}
 }
 
@@ -387,10 +418,16 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case accessLoadedMsg:
 		m.access = msg.access
 		return m, nil
+	case driftCheckedMsg:
+		m = m.applyDrift(msg.status)
+		// A drift notice is transient (setNotice gives it a TTL); start the gated
+		// tick so it actually fades rather than lingering on an idle picker.
+		return m, m.maybeStartTick()
 	case themeSaveDoneMsg:
 		m.applyThemeSave(msg)
 	case tea.KeyPressMsg:
 		key := normalizedKey(msg)
+		m.interacted = true
 		if m.themeEditor != nil {
 			return m.updateThemeEditor(msg, key)
 		}
@@ -1304,12 +1341,17 @@ func (m pickerModel) startAction(action Action) (pickerModel, tea.Cmd) {
 		m.messageErr = true
 		return m, nil
 	}
-	return m.startRequest(ActionRequest{
-		Action:  action,
-		Entry:   entry,
-		Filter:  m.query,
-		MFAOnly: m.mfaOnly,
-	}, actionBusyTitle(action), entry.Path)
+	// Only entry-scoped actions carry an entry: store-wide actions (clears,
+	// pull) must not name whatever happened to be selected, which would read as
+	// nonsense both in the busy box ("pulling from remote demo/email") and in a
+	// timeout/error message keyed off req.Entry.Path.
+	req := ActionRequest{Action: action, Filter: m.query, MFAOnly: m.mfaOnly}
+	detail := ""
+	if actionNeedsEntry(action) {
+		req.Entry = entry
+		detail = entry.Path
+	}
+	return m.startRequest(req, actionBusyTitle(action), detail)
 }
 
 // startRequest spins up the busy box and dispatches a request to the action
@@ -1465,9 +1507,57 @@ func (m pickerModel) updateModal(key string) (pickerModel, tea.Cmd) {
 
 func (m pickerModel) startConfirm(action Action) pickerModel {
 	prompt, detail := m.confirmText(action)
-	m.confirm = &pickerConfirm{action: action, prompt: prompt, detail: detail}
+	m.confirm = &pickerConfirm{
+		action: action,
+		prompt: prompt,
+		detail: detail,
+		title:  confirmTitle(action),
+		danger: confirmDanger(action),
+	}
 	m.message = ""
 	m.messageErr = false
+	return m
+}
+
+// confirmTitle / confirmDanger style the confirm box per action. Destructive
+// state-wipes stay danger-red under a "confirm" header; the benign sync prompt
+// gets a calm "sync" header with no danger styling.
+func confirmTitle(action Action) string {
+	if action == ActionPull {
+		return "sync"
+	}
+	return "confirm"
+}
+
+func confirmDanger(action Action) bool {
+	return action != ActionPull
+}
+
+// applyDrift reacts to the async store-drift verdict. It never interrupts an
+// overlay the user already opened; a "behind" store opens the sync confirm,
+// while a stale/local-only store leaves a non-blocking notice. Everything else
+// (clean, no remote, indeterminate) stays silent.
+func (m pickerModel) applyDrift(status passstore.DriftStatus) pickerModel {
+	if m.overlayActive() || m.message != "" {
+		return m
+	}
+	switch status.Kind {
+	case passstore.DriftBehind:
+		// The check resolves up to a few seconds after launch. If the user has
+		// already started typing, do not yank focus into a confirm — a stray
+		// keystroke could dismiss it or trigger an unwanted pull. Surface a notice
+		// instead; popping the prompt only happens on an untouched, freshly
+		// launched picker.
+		if m.interacted {
+			m.setNotice("Remote has new entries — relaunch passage to pull.", false)
+			return m
+		}
+		return m.startConfirm(ActionPull)
+	case passstore.DriftStale:
+		m.setNotice("Store sync status unknown — remote unreachable.", false)
+	case passstore.DriftLocal:
+		m.setNotice("Store has local changes not yet pushed.", false)
+	}
 	return m
 }
 
@@ -1509,6 +1599,8 @@ func (m pickerModel) confirmText(action Action) (string, string) {
 	case ActionRemove:
 		entry, _ := m.selectedEntry()
 		return "Remove " + entry.Path + "?", "deletes the encrypted entry"
+	case ActionPull:
+		return "Store has upstream changes — pull now?", "fast-forwards secrets others pushed to the remote"
 	default:
 		return "Proceed?", ""
 	}
@@ -1538,15 +1630,19 @@ func (m pickerModel) composerLines(width int, theme pickerTheme, avail int) []st
 }
 
 func (m pickerModel) confirmLines(width int, theme pickerTheme) []string {
-	body := []string{theme.warning(m.confirm.prompt)}
+	headline := theme.warning(m.confirm.prompt)
+	if !m.confirm.danger {
+		headline = theme.primary(m.confirm.prompt)
+	}
+	body := []string{headline}
 	if m.confirm.detail != "" {
 		body = append(body, "", theme.muted(m.confirm.detail))
 	}
 	return splitRendered(renderWorkflowShell(theme, clamp(width, 54, 100), workflowShell{
-		Title:  "confirm",
+		Title:  m.confirm.title,
 		Body:   body,
 		Footer: termstyle.Footer([]termstyle.KeyHint{{Key: "y", Label: "confirm"}, {Key: "esc", Label: "cancel"}}, 0),
-		Danger: true,
+		Danger: m.confirm.danger,
 	}))
 }
 
@@ -1787,6 +1883,8 @@ func actionBusyTitle(action Action) string {
 		return "clearing pins"
 	case ActionClearRecents:
 		return "clearing recents"
+	case ActionPull:
+		return "pulling from remote"
 	case ActionDoctor:
 		return "running doctor"
 	case ActionKeys:
