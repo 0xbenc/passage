@@ -1299,3 +1299,75 @@ func TestPickerTickGatedToLiveState(t *testing.T) {
 		t.Fatal("busy tick must advance the frame counter")
 	}
 }
+
+func TestPickerPasteEntersFilter(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+		{Path: "beta", Display: "beta"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+
+	// A clipboard trailing newline must not swallow the whole paste.
+	updated, _ := model.Update(tea.PasteMsg{Content: "beta\n"})
+	got := updated.(pickerModel)
+
+	if got.query != "beta" {
+		t.Fatalf("query = %q, want beta", got.query)
+	}
+	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "beta" {
+		t.Fatalf("filtered = %#v", got.filtered)
+	}
+}
+
+func TestPickerPasteReachesComposerSecret(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+	model.width = 100
+	model.height = 24
+	var m tea.Model = model
+	send := func(msg tea.Msg) { u, _ := m.Update(msg); m = u }
+
+	send(tea.KeyPressMsg(tea.Key{Text: "N"}))
+	for _, r := range "work/new" {
+		send(tea.KeyPressMsg(tea.Key{Text: string(r)}))
+	}
+	send(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	send(tea.PasteMsg{Content: "s3cret\n"})
+
+	got := m.(pickerModel)
+	if got.composer == nil {
+		t.Fatal("composer closed unexpectedly")
+	}
+	if got.composer.step != stepSecret {
+		t.Fatalf("step = %v, want secret", got.composer.step)
+	}
+	if got.composer.secret.String() != "s3cret" {
+		t.Fatalf("secret = %q, want s3cret", got.composer.secret.String())
+	}
+}
+
+func TestPickerPasteIgnoredByOverlays(t *testing.T) {
+	base := newPickerModel([]passstore.Entry{
+		{Path: "alpha", Display: "alpha"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+
+	// Overlays own the screen; a paste must not land in the filter hidden
+	// behind them.
+	withHelp := base
+	withHelp.help = true
+	withConfirm := base
+	withConfirm.confirm = &pickerConfirm{}
+	withModal := base
+	withModal.modal = &pickerModal{}
+
+	for name, model := range map[string]pickerModel{
+		"help":    withHelp,
+		"confirm": withConfirm,
+		"modal":   withModal,
+	} {
+		updated, _ := model.Update(tea.PasteMsg{Content: "beta"})
+		if got := updated.(pickerModel); got.query != "" {
+			t.Errorf("%s: query = %q, want empty", name, got.query)
+		}
+	}
+}

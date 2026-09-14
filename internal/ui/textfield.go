@@ -65,15 +65,27 @@ func (f textField) update(key, text string) textField {
 		f.cursor = 0
 	default:
 		if safeTextInput(text) {
-			runes := []rune(text)
-			v := make([]rune, 0, len(f.value)+len(runes))
-			v = append(v, f.value[:f.cursor]...)
-			v = append(v, runes...)
-			v = append(v, f.value[f.cursor:]...)
-			f.value = v
-			f.cursor += len(runes)
+			f = f.insert(text)
 		}
 	}
+	return f
+}
+
+// insert splices text at the cursor. Unlike update it treats its argument as
+// content, never as a keystroke, so bracketed-paste text cannot act as a
+// command. Callers filter the text first (see sanitizePaste); an empty string
+// is a no-op.
+func (f textField) insert(text string) textField {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return f
+	}
+	v := make([]rune, 0, len(f.value)+len(runes))
+	v = append(v, f.value[:f.cursor]...)
+	v = append(v, runes...)
+	v = append(v, f.value[f.cursor:]...)
+	f.value = v
+	f.cursor += len(runes)
 	return f
 }
 

@@ -389,6 +389,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case themeSaveDoneMsg:
 		m.applyThemeSave(msg)
+	case tea.PasteMsg:
+		// Bracketed paste arrives as its own message, never as key presses, so
+		// without this branch a ^V/^⇧V would silently vanish.
+		return m.updatePaste(sanitizePaste(msg.Content)), nil
 	case tea.KeyPressMsg:
 		key := normalizedKey(msg)
 		if m.themeEditor != nil {
@@ -590,6 +594,32 @@ func (m pickerModel) entryPaths() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// updatePaste delivers pasted text to whichever surface has focus, mirroring
+// the KeyPressMsg branch's precedence. Surfaces with no text field (help, busy,
+// modal, confirm) swallow the paste rather than letting it land in the filter
+// underneath, which is hidden behind them.
+func (m pickerModel) updatePaste(text string) pickerModel {
+	if text == "" {
+		return m
+	}
+	if m.themeEditor != nil {
+		editor := m.themeEditor.paste(text)
+		m.themeEditor = &editor
+		return m
+	}
+	if m.composer != nil {
+		c := m.composer.paste(text)
+		m.composer = &c
+		return m
+	}
+	if m.help || m.busy != nil || m.modal != nil || m.confirm != nil {
+		return m
+	}
+	m.query += text
+	m.applyFilter()
+	return m
 }
 
 func (m pickerModel) updateComposer(msg tea.KeyPressMsg, key string) (pickerModel, tea.Cmd) {
@@ -1895,6 +1925,24 @@ func normalizedKey(msg tea.KeyPressMsg) string {
 		return "end"
 	}
 	return key
+}
+
+// sanitizePaste reduces pasted text to what a single-line field can accept: the
+// content up to the first line break — clipboards routinely carry a trailing
+// newline — minus control and C1 bytes that could otherwise smuggle an escape
+// sequence into a field. It filters where safeTextInput rejects: that gate is
+// all-or-nothing because a keystroke is one rune, but dropping a whole password
+// because it was copied with its newline is not an option.
+func sanitizePaste(text string) string {
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		text = text[:i]
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 func safeTextInput(text string) bool {

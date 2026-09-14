@@ -582,3 +582,88 @@ func TestPickerRendersReadOnlyBadge(t *testing.T) {
 		t.Fatalf("read-only badge not rendered:\n%s", out)
 	}
 }
+
+func TestSanitizePaste(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"s3cret", "s3cret"},
+		{"s3cret\n", "s3cret"},               // the usual clipboard trailing newline
+		{"s3cret\r\n", "s3cret"},             // CRLF clipboard
+		{"line one\nline two", "line one"},   // single-line field takes the first line
+		{"\x1b[31mred\x1b[0m", "[31mred[0m"}, // ESC dropped, remainder inert
+		{"a\x00b\x7fc", "abc"},               // NUL/DEL stripped rather than rejecting all
+		{"\n", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := sanitizePaste(tc.in); got != tc.want {
+			t.Errorf("sanitizePaste(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTextFieldInsertAtCursor(t *testing.T) {
+	f := feed(textField{}, "ac")
+	f = f.update("left", "")
+	f = f.insert("b")
+	if f.String() != "abc" {
+		t.Fatalf("value = %q, want abc", f.String())
+	}
+	if f.cursor != 2 {
+		t.Fatalf("cursor = %d, want 2", f.cursor)
+	}
+	if f.insert("").String() != "abc" {
+		t.Fatal("empty insert must be a no-op")
+	}
+}
+
+func TestComposerPasteIntoSecretAndConfirm(t *testing.T) {
+	c := newComposer(composePassword, nil)
+	c = typeComposer(c, "work/new")
+	c = c.update("enter", "")
+	c = c.paste("s3cret")
+	if c.secret.String() != "s3cret" {
+		t.Fatalf("secret = %q", c.secret.String())
+	}
+	c = c.update("enter", "")
+	c = c.paste("s3cret")
+	c = c.update("enter", "")
+	if !c.done || c.canceled {
+		t.Fatalf("pasted secret did not submit: done=%v canceled=%v", c.done, c.canceled)
+	}
+	if string(c.result().Content) != "s3cret" {
+		t.Fatalf("content = %q", c.result().Content)
+	}
+}
+
+func TestComposerPastePathResetsSelection(t *testing.T) {
+	c := newComposer(composePassword, fixturePaths)
+	c = typeComposer(c, "zz")
+	c = c.update("tab", "") // no match -> notice set
+	if c.notice == "" {
+		t.Fatal("precondition: expected a no-match notice")
+	}
+	c = c.update("down", "")
+	c = c.paste("top")
+	if c.path.String() != "zztop" {
+		t.Fatalf("path = %q, want zztop", c.path.String())
+	}
+	if c.selIndex != -1 {
+		t.Fatalf("selIndex = %d, want -1", c.selIndex)
+	}
+	if c.notice != "" {
+		t.Fatalf("notice = %q, want cleared", c.notice)
+	}
+}
+
+func TestComposerPasteCannotCancelOrSubmit(t *testing.T) {
+	// Pasted content is data, never a command: text that happens to spell a
+	// key name must land in the field instead of acting on the composer.
+	c := newComposer(composePassword, nil)
+	c = c.paste("esc")
+	if c.done || c.canceled {
+		t.Fatalf("paste acted as a command: done=%v canceled=%v", c.done, c.canceled)
+	}
+	if c.path.String() != "esc" {
+		t.Fatalf("path = %q, want esc", c.path.String())
+	}
+}

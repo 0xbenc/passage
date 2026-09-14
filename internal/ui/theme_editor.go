@@ -239,6 +239,16 @@ func (m themeEditorModel) updateEdit(msg tea.KeyPressMsg) (themeEditorModel, boo
 	return m, false
 }
 
+// paste appends bracketed-paste text to the raw-spec edit buffer. Outside edit
+// mode the editor has no text field, so the paste is ignored rather than being
+// replayed as the single-letter commands it happens to spell.
+func (m themeEditorModel) paste(text string) themeEditorModel {
+	if m.editMode {
+		m.editBuffer += text
+	}
+	return m
+}
+
 func (m themeEditorModel) view(width int, theme pickerTheme) []string {
 	width = clamp(width, 48, 140)
 	bodyWidth := max(20, width-4)

@@ -156,6 +156,30 @@ func (c composerModel) update(key, text string) composerModel {
 	return c
 }
 
+// paste inserts bracketed-paste text into whichever field the current step is
+// editing. It is deliberately not routed through update: pasted content is
+// never a command, so it can neither cancel the composer nor fire ^R/^G. Text
+// arrives already filtered to a single printable line (see sanitizePaste).
+func (c composerModel) paste(text string) composerModel {
+	if text == "" {
+		return c
+	}
+	switch c.step {
+	case stepPath:
+		c.path = c.path.insert(text)
+		// Same as any field edit: drop back to plain type mode and clear the
+		// now-stale notice.
+		c.selIndex = -1
+		c.notice = ""
+	case stepSecret:
+		c.secret = c.secret.insert(text)
+	case stepConfirm:
+		c.confirm = c.confirm.insert(text)
+	}
+	// stepLength has no text field, so a paste there is ignored.
+	return c
+}
+
 // updatePath drives stepPath: shell-style TAB completion over the implicit
 // folder tree, arrow selection of the live candidate list, and enter-validation
 // against the path index. selIndex == -1 is plain type mode (no highlight); any
