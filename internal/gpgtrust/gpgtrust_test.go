@@ -9,12 +9,28 @@ import (
 	"testing"
 )
 
+// fakeGPG writes a stub `gpg` driven by env vars so the trust engine can be
+// tested without a real keyring:
+//
+//	GPG_FAKE_SECRET       ids we hold a secret key for (--list-secret-keys ok)
+//	GPG_FAKE_PRESENT      ids present in the keyring (--list-keys ok)
+//	GPG_FAKE_ENCRYPTABLE  ids that --encrypt --recipient succeeds for
+//	GPG_FAKE_VALIDITY     "id=char" pairs giving the pub-line validity field
+//	GPG_FAKE_IMPORT_KEYS  fingerprints the show-only --import peek reports
+//	GPG_FAKE_LSIGN_LOG    file appended to on every --quick-lsign-key
 func fakeGPG(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gpg")
 	script := `#!/bin/sh
 contains() { case " $2 " in *" $1 "*) return 0;; esac; return 1; }
+validity_of() {
+  for pair in $GPG_FAKE_VALIDITY; do
+    key=${pair%%=*}; val=${pair#*=}
+    if [ "$key" = "$1" ]; then printf '%s' "$val"; return; fi
+  done
+  printf '%s' '-'
+}
 mode=""; listid=""; recipients=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -23,8 +39,11 @@ while [ $# -gt 0 ]; do
       if [ $# -gt 0 ]; then case "$1" in --*) ;; *) listid="$1"; shift ;; esac; fi ;;
     --encrypt) mode=encrypt; shift ;;
     --recipient) shift; recipients="$recipients $1"; shift ;;
+    --import) mode=import; shift; shift ;;
     --output) shift; shift ;;
     --export-ownertrust) mode=ownertrust; shift ;;
+    --quick-lsign-key) mode=lsign; shift
+      echo "$1" >> "${GPG_FAKE_LSIGN_LOG:-/dev/null}"; shift ;;
     *) shift ;;
   esac
 done
@@ -32,10 +51,19 @@ case "$mode" in
   secret) contains "$listid" "$GPG_FAKE_SECRET" && exit 0; exit 2 ;;
   encrypt) for r in $recipients; do contains "$r" "$GPG_FAKE_ENCRYPTABLE" || exit 2; done; exit 0 ;;
   ownertrust) exit 0 ;;
+  import)
+    for k in $GPG_FAKE_IMPORT_KEYS; do
+      printf 'pub:-:::::::::::::\nfpr:::::::::%s:\nuid:-:::::::::%s:\n' "$k" "$k"
+    done
+    exit 0 ;;
   listkeys)
     if [ -n "$listid" ]; then
       if contains "$listid" "$GPG_FAKE_PRESENT" || contains "$listid" "$GPG_FAKE_SECRET"; then
-        printf 'pub:-:::::::::::::\nfpr:::::::::%s:\nuid:-:::::::::%s:\n' "$listid" "$listid"; exit 0
+        # Field layout matters: the colon parsers skip lines with fewer than
+        # ten fields, so the pub line must keep its full 14-field shape with
+        # the validity char in field 2 (the same scale gpg itself uses).
+        v=$(validity_of "$listid")
+        printf 'pub:%s:::::::::::::\nfpr:::::::::%s:\nuid:%s:::::::::%s:\n' "$v" "$listid" "$v" "$listid"; exit 0
       fi
       exit 2
     fi ;;
@@ -99,6 +127,51 @@ func TestPlanRecipientsClassification(t *testing.T) {
 	}
 	if !report.DryRun || len(report.Results) != 1 || report.Results[0].Signed {
 		t.Fatalf("dry-run report = %#v", report)
+	}
+}
+
+// TestPlanImportDirUnusableKeys pins item 3 of the known-issues brief: an
+// expired/revoked key in the import dir must plan as unusable — a "fix" gpg
+// will refuse — not would-lsign, for both a foreign key and one you hold the
+// secret for (which was mis-planned owned-skip). Apply must not claim it
+// signed anything.
+func TestPlanImportDirUnusableKeys(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keys.asc"), []byte("key material"), 0o600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	lsignLog := filepath.Join(t.TempDir(), "lsign.log")
+	t.Setenv("GPG_FAKE_IMPORT_KEYS", "expiredkey ownedexpired")
+	t.Setenv("GPG_FAKE_PRESENT", "expiredkey ownedexpired")
+	t.Setenv("GPG_FAKE_SECRET", "ownedexpired")
+	t.Setenv("GPG_FAKE_ENCRYPTABLE", "")
+	t.Setenv("GPG_FAKE_VALIDITY", "expiredkey=e ownedexpired=r")
+	t.Setenv("GPG_FAKE_LSIGN_LOG", lsignLog)
+
+	tr := Truster{GPGBinary: fakeGPG(t), StoreRoot: t.TempDir()}
+	plan, err := tr.PlanImportDir(context.Background(), dir, Lsign)
+	if err != nil {
+		t.Fatalf("PlanImportDir: %v", err)
+	}
+	if got := actionOf(plan, "expiredkey"); got != ActionUnusable {
+		t.Errorf("expiredkey action = %q, want unusable", got)
+	}
+	if got := actionOf(plan, "ownedexpired"); got != ActionUnusable {
+		t.Errorf("ownedexpired action = %q, want unusable", got)
+	}
+	if plan.Actionable() {
+		t.Errorf("plan must not be actionable (nothing can be fixed): %#v", plan.Recipients)
+	}
+
+	report, err := tr.Apply(context.Background(), plan, Lsign, false)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(report.Results) != 0 {
+		t.Fatalf("Apply reported results for unfixable keys: %#v", report.Results)
+	}
+	if data, err := os.ReadFile(lsignLog); err == nil && len(data) > 0 {
+		t.Fatalf("gpg was asked to local-sign an unusable key: %s", data)
 	}
 }
 
@@ -249,7 +322,11 @@ func TestRealGPGOwnKeyGetsUltimateTrust(t *testing.T) {
 
 // TestRealGPGApplyLsignAndNeverDowngrade exercises Apply against a real gpg in a
 // throwaway keyring: lsign flips a read-only scope writable; --full sets
-// ownertrust=4 on a fresh key but never downgrades an existing ultimate (5).
+// ownertrust to full (5) on a fresh key but never downgrades an existing
+// ultimate (6). Those numbers are the trustdb-file scale that
+// --export-ownertrust reads and writes (4=marginal, 5=full, 6=ultimate) — the
+// assertions below quote that scale on purpose; do not "fix" the code to match
+// a comment that quotes a different one.
 func TestRealGPGApplyLsignAndNeverDowngrade(t *testing.T) {
 	gpgBin, err := exec.LookPath("gpg")
 	if err != nil {

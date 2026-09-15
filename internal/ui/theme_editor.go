@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
@@ -26,6 +27,11 @@ type ThemeEditorResult struct {
 	Config termstyle.ThemeConfig
 	Theme  termstyle.Theme
 	Path   string
+	// DroppedRoles names the roles whose spec failed to parse and was
+	// therefore omitted from Config, e.g. `primary (unknown style token
+	// "…")`. The save message warns about them instead of deleting the
+	// user's overrides silently.
+	DroppedRoles []string
 }
 
 type ThemeSaveResult struct {
@@ -117,6 +123,9 @@ type themeEditorModel struct {
 	tone       textTone
 	width      int
 	height     int
+	// dropped names the roles config() could not parse and left out of the
+	// saved config, so the save result can warn instead of losing them.
+	dropped []string
 }
 
 type textTone int
@@ -181,7 +190,9 @@ func (m themeEditorModel) update(msg tea.Msg) (themeEditorModel, bool) {
 			return m.updateEdit(msg)
 		}
 		switch normalizedKey(msg) {
-		case "esc", "Q":
+		case "esc":
+			// Quit is letter-free (flow contract §1): no q/Q here — the
+			// wrapper's ctrl+c/ctrl+q cover the rest even mid raw-edit.
 			m.canceled = true
 			return m, true
 		case "s", "ctrl+s":
@@ -494,19 +505,26 @@ func (m *themeEditorModel) cycleTone() {
 }
 
 func (m themeEditorModel) result() ThemeEditorResult {
+	cfg := m.config()
 	return ThemeEditorResult{
-		Config: m.config(),
-		Theme:  m.currentTheme(),
-		Path:   m.configPath,
+		Config:       cfg,
+		Theme:        m.currentTheme(),
+		Path:         m.configPath,
+		DroppedRoles: m.dropped,
 	}
 }
 
-func (m themeEditorModel) config() termstyle.ThemeConfig {
+// config builds the ThemeConfig that gets saved. A role whose spec fails
+// ParseStyleSpec is omitted (the live preview already ignores it) but named
+// in m.dropped, so the save message reports the loss instead of letting a
+// hand-edited or version-skewed theme.conf silently drop overrides.
+func (m *themeEditorModel) config() termstyle.ThemeConfig {
 	cfg := termstyle.ThemeConfig{
 		BaseName: m.base,
 		Codes:    make(map[termstyle.Role]string),
 		Specs:    make(map[termstyle.Role]string),
 	}
+	m.dropped = nil
 	for _, meta := range themeRoles {
 		spec := strings.TrimSpace(m.values[meta.Role])
 		if spec == "" {
@@ -514,6 +532,7 @@ func (m themeEditorModel) config() termstyle.ThemeConfig {
 		}
 		code, err := termstyle.ParseStyleSpec(spec)
 		if err != nil {
+			m.dropped = append(m.dropped, fmt.Sprintf("%s (%s)", meta.Label, err))
 			continue
 		}
 		cfg.Codes[meta.Role] = code

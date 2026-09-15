@@ -14,6 +14,7 @@ complete -c passage -n "__fish_use_subcommand" -a "insert" -d "Create or overwri
 complete -c passage -n "__fish_use_subcommand" -a "generate" -d "Generate a random password"
 complete -c passage -n "__fish_use_subcommand" -a "edit" -d "Edit an entry in EDITOR"
 complete -c passage -n "__fish_use_subcommand" -a "rm" -d "Remove an entry"
+complete -c passage -n "__fish_use_subcommand" -a "remove" -d "Remove an entry (alias for rm)"
 complete -c passage -n "__fish_use_subcommand" -a "doctor" -d "Run health checks"
 complete -c passage -n "__fish_use_subcommand" -a "access" -d "Report write access per scope"
 complete -c passage -n "__fish_use_subcommand" -a "trust" -d "Local-sign recipients to make a scope writable"

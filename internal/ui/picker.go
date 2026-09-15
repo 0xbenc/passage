@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -123,12 +124,10 @@ type ActionOutcome struct {
 	TextTitle       string
 	TextLines       []string
 	// ClipArmed marks that a value was placed on the clipboard; the picker
-	// shows an armed pill counting down ClipRemaining seconds (named by
-	// ClipTool) and clears the clipboard at zero while it is open. Never
-	// carries the secret itself.
+	// shows an armed pill counting down ClipRemaining seconds and clears the
+	// clipboard at zero while it is open. Never carries the secret itself.
 	ClipArmed     bool
 	ClipRemaining int
-	ClipTool      string
 	Err           error
 }
 
@@ -218,22 +217,20 @@ type pickerModel struct {
 // accessLoadedMsg delivers the asynchronously-computed write verdicts.
 type accessLoadedMsg struct{ access map[string]string }
 
-// clipState tracks an armed clipboard: which tool holds it and when the
-// auto-clear fires. Recomputed from the wall clock, never holds the secret.
+// clipState tracks an armed clipboard's auto-clear time. Recomputed from the
+// wall clock, never holds the secret.
 type clipState struct {
-	tool    string
 	expires time.Time
 }
 
 type clipClearedMsg struct{ err error }
 
 type pickerBusy struct {
-	id        int
-	title     string
-	detail    string
-	cancel    context.CancelFunc
-	canceling bool
-	started   time.Time
+	id      int
+	title   string
+	detail  string
+	cancel  context.CancelFunc
+	started time.Time
 }
 
 // pickerConfirm is a pending destructive action awaiting a y/esc confirmation,
@@ -443,7 +440,15 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureVisible()
 		case "backspace":
 			if m.query != "" {
-				m.query = m.query[:len(m.query)-1]
+				// Remove one full rune, not one byte: the filter accepts any
+				// safe printable text (e.g. an entry named "café"), and a
+				// byte-level cut would leave a torn UTF-8 sequence behind.
+				// DecodeLastRuneInString yields (RuneError, 1) for a trailing
+				// invalid byte, so deleting that single byte is the correct
+				// degradation.
+				if _, size := utf8.DecodeLastRuneInString(m.query); size > 0 {
+					m.query = m.query[:len(m.query)-size]
+				}
 				m.applyFilter()
 			}
 		case "ctrl+y":
@@ -1334,12 +1339,19 @@ func (m pickerModel) startAction(action Action) (pickerModel, tea.Cmd) {
 		m.messageErr = true
 		return m, nil
 	}
+	// Per-entry verbs name the entry in the busy detail; global actions
+	// (doctor, keys, clears) take no entry, so a hovered path would be
+	// irrelevant and misleading there.
+	detail := ""
+	if actionNeedsEntry(action) {
+		detail = entry.Path
+	}
 	return m.startRequest(ActionRequest{
 		Action:  action,
 		Entry:   entry,
 		Filter:  m.query,
 		MFAOnly: m.mfaOnly,
-	}, actionBusyTitle(action), entry.Path)
+	}, actionBusyTitle(action), detail)
 }
 
 // startRequest spins up the busy box and dispatches a request to the action
@@ -1600,7 +1612,6 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 	}
 	if out.ClipArmed && out.ClipRemaining > 0 {
 		m.clip = &clipState{
-			tool:    out.ClipTool,
 			expires: m.now().Add(time.Duration(out.ClipRemaining) * time.Second),
 		}
 	}
@@ -1707,9 +1718,6 @@ func (m pickerModel) busyLines(width int, theme pickerTheme) []string {
 	spinner := theme.accent(m.glyphs.Frame(m.tick))
 	body := []string{strings.TrimSpace(spinner + " " + theme.primary(title))}
 	status := "This will return to the picker."
-	if m.busy.canceling {
-		status = "Cancel requested. Waiting for the command to stop."
-	}
 	if elapsed := m.busyElapsed(); elapsed != "" {
 		status = elapsed + "  ·  " + status
 	}

@@ -5,7 +5,7 @@ _passage()
     local cur prev words cword
     _init_completion || return
 
-    local commands="list show copy reveal totp mfa pin unpin clear-recents clear-pins clear-clipboard insert generate edit rm doctor access trust keys theme version help"
+    local commands="list show copy reveal totp mfa pin unpin clear-recents clear-pins clear-clipboard insert generate edit rm remove doctor access trust keys theme version help"
     local common_flags="--store-dir --state-dir --json --no-color --theme-file --no-alt-screen --help"
 
     if [[ $cword -eq 1 ]]; then
@@ -15,7 +15,7 @@ _passage()
 
     case "${words[1]}" in
         list)
-            COMPREPLY=( $(compgen -W "--json --filter --mfa --store-dir --state-dir --no-color --theme-file --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--json --filter --mfa --store-dir --state-dir --no-color --theme-file --no-alt-screen --help" -- "$cur") )
             return
             ;;
         show)
@@ -23,7 +23,7 @@ _passage()
             return
             ;;
         copy)
-            COMPREPLY=( $(compgen -W "--private --store-dir --state-dir --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--private --store-dir --state-dir --no-color --theme-file --no-alt-screen --help" -- "$cur") )
             return
             ;;
         reveal)

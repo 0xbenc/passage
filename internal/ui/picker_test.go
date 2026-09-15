@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -111,6 +112,46 @@ func TestPickerPrintableTextFilters(t *testing.T) {
 	}
 	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "beta" {
 		t.Fatalf("filtered = %#v", got.filtered)
+	}
+}
+
+// TestPickerBackspaceRemovesWholeRune pins item 1 of the known-issues brief:
+// the filter may hold multi-byte UTF-8 (e.g. an entry named "café"), and
+// backspace must remove a full rune — a byte-level cut leaves a torn
+// sequence that corrupts matching and cursor math.
+func TestPickerBackspaceRemovesWholeRune(t *testing.T) {
+	model := newPickerModel([]passstore.Entry{
+		{Path: "café", Display: "café"},
+		{Path: "other", Display: "other"},
+	}, PickOptions{}, termstyle.TerminalTheme())
+	model.query = "café"
+	model.applyFilter()
+
+	back := tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace})
+	updated, _ := model.Update(back)
+	got := updated.(pickerModel)
+	if got.query != "caf" {
+		t.Fatalf("query after backspace = %q, want caf", got.query)
+	}
+	if !utf8.ValidString(got.query) {
+		t.Fatalf("query after backspace is invalid UTF-8: %q", got.query)
+	}
+	// The re-filter ran on the (now valid) query without panicking.
+	if len(got.filtered) != 1 || got.entries[got.filtered[0].Index].Path != "café" {
+		t.Fatalf("filtered = %#v, want café", got.filtered)
+	}
+
+	// A further four backspaces drain to "" and then no-op.
+	for i := 0; i < 4; i++ {
+		updated, _ = got.Update(back)
+		got = updated.(pickerModel)
+	}
+	if got.query != "" {
+		t.Fatalf("query after draining = %q, want empty", got.query)
+	}
+	updated, _ = got.Update(back)
+	if got := updated.(pickerModel); got.query != "" {
+		t.Fatalf("backspace on empty query changed it to %q", got.query)
 	}
 }
 
@@ -937,6 +978,31 @@ func TestPickerBusyCancelReturnsImmediatelyAndIgnoresLateResult(t *testing.T) {
 	}
 }
 
+// TestBusyDetailOnlyForEntryActions pins item 6 of the known-issues brief: the
+// busy box names the entry for per-entry verbs, but global actions (doctor,
+// keys, clears) must not drag in whichever entry happened to be hovered.
+func TestBusyDetailOnlyForEntryActions(t *testing.T) {
+	newModel := func() pickerModel {
+		return newPickerModel([]passstore.Entry{
+			{Path: "work/github", Display: "work/github"},
+		}, PickOptions{
+			RunAction: func(context.Context, ActionRequest) ActionOutcome {
+				return ActionOutcome{Message: "done"}
+			},
+		}, termstyle.TerminalTheme())
+	}
+
+	doctor, _ := newModel().Update(ctrlKey('d'))
+	if got := doctor.(pickerModel); got.busy == nil || got.busy.detail != "" {
+		t.Fatalf("doctor busy detail = %q, want empty (no entry involved)", got.busy.detail)
+	}
+
+	copied, _ := newModel().Update(ctrlKey('y'))
+	if got := copied.(pickerModel); got.busy == nil || got.busy.detail != "work/github" {
+		t.Fatalf("copy busy detail = %q, want work/github", got.busy.detail)
+	}
+}
+
 func TestPickerBusyCtrlCQuitsInsteadOfCanceling(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "alpha", Display: "alpha"},
@@ -1174,7 +1240,7 @@ func TestClipboardArmsAndAutoClears(t *testing.T) {
 	cur := base
 	model.clock = func() time.Time { return cur }
 
-	model.applyOutcome(0, ActionOutcome{Message: "copied", ClipArmed: true, ClipRemaining: 45, ClipTool: "wl-copy"})
+	model.applyOutcome(0, ActionOutcome{Message: "copied", ClipArmed: true, ClipRemaining: 45})
 	if model.clip == nil {
 		t.Fatal("copy should arm the clipboard pill")
 	}
@@ -1213,7 +1279,7 @@ func TestManualClearDisarmsClipPill(t *testing.T) {
 	model := newPickerModel([]passstore.Entry{
 		{Path: "alpha", Display: "alpha"},
 	}, PickOptions{}, termstyle.TerminalTheme().WithNoColor(true))
-	model.clip = &clipState{tool: "xclip", expires: model.now().Add(time.Minute)}
+	model.clip = &clipState{expires: model.now().Add(time.Minute)}
 
 	updated, _ := model.Update(ctrlKey('x'))
 	got := updated.(pickerModel)

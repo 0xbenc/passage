@@ -18,6 +18,7 @@ _passage() {
     'generate:Generate a random password'
     'edit:Edit an entry in $EDITOR'
     'rm:Remove an entry'
+    'remove:Remove an entry (alias for rm)'
     'doctor:Run health checks'
     'access:Report write access per .gpg-id scope'
     'trust:Local-sign recipients to make a scope writable'

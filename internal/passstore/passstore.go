@@ -385,7 +385,7 @@ func (s Store) Show(ctx context.Context, entry string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// InsertOptions / GenerateOptions / RemoveOptions tune the write verbs.
+// GenerateOptions / RemoveOptions tune the write verbs.
 type GenerateOptions struct {
 	NoSymbols bool
 	Length    int

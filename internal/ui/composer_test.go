@@ -232,7 +232,7 @@ func TestComposerEmptyPathStaysOnStep(t *testing.T) {
 	}
 }
 
-// --- stepPath tab-completion behavior (uses fixturePaths from pathindex_test) ---
+// --- stepPath tab-completion behavior (uses fixturePaths from fixtures_test) ---
 
 // TestComposerPathTabOutWorkflow is the headline flow: p<TAB> a<TAB> gmail to
 // build pp/alter-ego/gmail, confirming the folders exist along the way.

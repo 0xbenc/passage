@@ -79,6 +79,39 @@ func TestThemeEditorRejectsInvalidRawRoleEdit(t *testing.T) {
 	}
 }
 
+// TestThemeEditorSaveReportsDroppedRoles pins item 4 of the known-issues brief:
+// a spec that fails to parse (e.g. from a hand-edited or version-skewed
+// theme.conf) is omitted from the saved config, but named in the result so the
+// save message can warn — quiet data loss is the bug.
+func TestThemeEditorSaveReportsDroppedRoles(t *testing.T) {
+	model := newThemeEditorModel(ThemeEditorOptions{
+		Config: termstyle.ThemeConfig{
+			Specs: map[termstyle.Role]string{
+				termstyle.RolePrimary: "bogustoken",
+				termstyle.RoleWarning: "bold red",
+			},
+		},
+	})
+	// The editor loads the bad spec verbatim into the role's value.
+	if got := model.values[termstyle.RolePrimary]; got != "bogustoken" {
+		t.Fatalf("primary value = %q, want the raw bad spec", got)
+	}
+
+	res := model.result()
+	if _, ok := res.Config.Specs[termstyle.RolePrimary]; ok {
+		t.Fatalf("saved config keeps the unparseable primary spec: %#v", res.Config.Specs)
+	}
+	if got := res.Config.Specs[termstyle.RoleWarning]; got != "bold red" {
+		t.Fatalf("warning spec = %q, want bold red (valid roles must survive)", got)
+	}
+	if len(res.DroppedRoles) != 1 || !strings.Contains(res.DroppedRoles[0], "primary") {
+		t.Fatalf("DroppedRoles = %#v, want the primary role named", res.DroppedRoles)
+	}
+	if !strings.Contains(res.DroppedRoles[0], `unknown style token "bogustoken"`) {
+		t.Fatalf("DroppedRoles[0] = %q, want the parse error", res.DroppedRoles[0])
+	}
+}
+
 func TestThemeEditorCyclesRolePresets(t *testing.T) {
 	model := newThemeEditorModel(ThemeEditorOptions{})
 	model.cursor = themeCursorForRole(termstyle.RolePrimary)
@@ -131,6 +164,34 @@ func TestThemeEditorSeedsBaseFromConfig(t *testing.T) {
 	}
 	if got := model.currentTheme().Style(termstyle.RoleTitle, "x"); !strings.Contains(got, "38;2;") {
 		t.Fatalf("seeded vivid title = %q, want truecolor", got)
+	}
+}
+
+// TestThemeEditorQuitIsLetterFree pins item 5 of the known-issues brief
+// (flow contract §1, FROZEN): no letter quits or goes back. q/Q in browse
+// mode is inert, and esc is the cancel.
+func TestThemeEditorQuitIsLetterFree(t *testing.T) {
+	for _, letter := range []string{"q", "Q"} {
+		model := newThemeEditorModel(ThemeEditorOptions{})
+		updated, done := model.update(themeKeyMsg(letter))
+		if done {
+			t.Fatalf("letter %q closed the editor, want inert", letter)
+		}
+		if updated.canceled {
+			t.Fatalf("letter %q canceled the editor, want inert", letter)
+		}
+		if updated.message != "" {
+			t.Fatalf("letter %q set a status message %q, want inert", letter, updated.message)
+		}
+	}
+
+	model := newThemeEditorModel(ThemeEditorOptions{})
+	updated, done := model.update(themeKeyMsg("esc"))
+	if !done {
+		t.Fatal("esc did not close the editor")
+	}
+	if !updated.canceled {
+		t.Fatal("esc should cancel (not save)")
 	}
 }
 

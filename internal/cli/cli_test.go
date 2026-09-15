@@ -2,13 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
 	"github.com/0xbenc/passage/internal/ui"
 )
@@ -346,7 +350,8 @@ func TestRunGenerateWritable(t *testing.T) {
 	writeGPGIDFile(t, root, "owner")
 	bin := t.TempDir()
 	makeScript(t, bin, "gpg", fakeGPGScript)
-	pass := makeScript2(t, bin, "pass", `if [ "$1" = generate ]; then printf 'pw-line\nGenSecret\n'; exit 0; fi; exit 9`)
+	argvLog := filepath.Join(t.TempDir(), "pass-argv.log")
+	pass := makeScript2(t, bin, "pass", `echo "$@" >> `+argvLog+`; if [ "$1" = generate ]; then printf 'pw-line\nGenSecret\n'; exit 0; fi; exit 9`)
 	t.Setenv("PATH", bin)
 	t.Setenv("PASSAGE_PASS_BINARY", pass)
 	t.Setenv("GPG_FAKE_SECRET", "owner")
@@ -360,6 +365,15 @@ func TestRunGenerateWritable(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Generated work/new") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+	// The LENGTH argument must reach pass; a dropped length silently falls
+	// back to pass's default and no other assertion would notice.
+	argv, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("pass was never invoked: %v", err)
+	}
+	if want := "generate --force -- work/new 16"; !strings.Contains(string(argv), want) {
+		t.Fatalf("pass argv = %q, want it to contain %q", argv, want)
 	}
 }
 
@@ -387,6 +401,58 @@ func TestRunInsertReadOnlyRefusedBeforeExec(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); err == nil {
 		t.Fatal("pass was invoked despite read-only pre-flight; it must refuse before exec")
+	}
+}
+
+// TestInteractiveActionErrorNamesActualTimeout pins item 2 of the known-issues
+// brief: the timeout message must name the deadline actually used for the
+// action — 60s for a write verb, not the 12s read timeout.
+func TestInteractiveActionErrorNamesActualTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(2 * time.Millisecond)
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("ctx.Err() = %v, want deadline exceeded", ctx.Err())
+	}
+
+	writeErr := interactiveActionError(ctx, ui.ActionRequest{
+		Action: ui.ActionRemove,
+		Entry:  passstore.Entry{Path: "work/github"},
+	}, writeActionTimeout, errors.New("ignored"))
+	if want := "remove work/github timed out after 1m0s; try `pass show -- work/github` once outside passage to unlock or diagnose GPG"; writeErr.Error() != want {
+		t.Fatalf("write timeout = %q, want %q", writeErr, want)
+	}
+
+	readErr := interactiveActionError(ctx, ui.ActionRequest{
+		Action: ui.ActionCopy,
+		Entry:  passstore.Entry{Path: "work/github"},
+	}, interactiveActionTimeout, errors.New("ignored"))
+	if want := "copy work/github timed out after 12s; try `pass show -- work/github` once outside passage to unlock or diagnose GPG"; readErr.Error() != want {
+		t.Fatalf("read timeout = %q, want %q", readErr, want)
+	}
+
+	globalErr := interactiveActionError(ctx, ui.ActionRequest{Action: ui.ActionKeys}, writeActionTimeout, errors.New("ignored"))
+	if want := "keys timed out after 1m0s"; globalErr.Error() != want {
+		t.Fatalf("global timeout = %q, want %q", globalErr, want)
+	}
+}
+
+// TestRunMissingEntryExitsTwo pins item 7 of the known-issues brief: not-found
+// is exit 2 on every entry verb (the documented contract), including
+// copy/reveal/totp, which used to report 1.
+func TestRunMissingEntryExitsTwo(t *testing.T) {
+	store := fakeStore(t)
+	for _, verb := range []string{"copy", "reveal", "totp"} {
+		t.Run(verb, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run([]string{verb, "missing/entry", "--store-dir", store, "--state-dir", t.TempDir()}, &stdout, &stderr, BuildInfo{})
+			if code != 2 {
+				t.Fatalf("Run %s missing/entry = %d, want 2; stderr=%s", verb, code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), `entry "missing/entry" not found`) {
+				t.Fatalf("stderr = %q, want not-found message", stderr.String())
+			}
+		})
 	}
 }
 
@@ -542,6 +608,46 @@ func TestThemeImportFromSsherpaFillsMissingRole(t *testing.T) {
 	}
 	if got := theme.Style(termstyle.RoleSelectedBar, "x"); got == "x" {
 		t.Fatalf("selected_bar rendered plain; should be filled from passage's vivid base")
+	}
+}
+
+// TestSaveThemeConfigMessageNamesDroppedRoles pins item 4 of the known-issues
+// brief end-to-end: the save result message the user sees names the roles that
+// were dropped for failing to parse, while the rest of the config is written.
+func TestSaveThemeConfigMessageNamesDroppedRoles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "theme.conf")
+	r := runner{stdout: io.Discard, stderr: io.Discard, env: os.Environ(), build: BuildInfo{}.normalized()}
+	saved, err := r.saveThemeConfig(t.Context(), commonFlags{themeFile: path}, ui.ThemeEditorResult{
+		Config: termstyle.ThemeConfig{
+			Specs: map[termstyle.Role]string{termstyle.RoleWarning: "bold red"},
+		},
+		Path:         path,
+		DroppedRoles: []string{`primary (unknown style token "bogustoken")`},
+	})
+	if err != nil {
+		t.Fatalf("saveThemeConfig: %v", err)
+	}
+	if !saved.Changed {
+		t.Fatalf("save should report a change, got: %#v", saved)
+	}
+	for _, want := range []string{
+		"Theme saved to",
+		`Dropped invalid roles: primary (unknown style token "bogustoken").`,
+	} {
+		if !strings.Contains(saved.Message, want) {
+			t.Fatalf("message = %q, want it to contain %q", saved.Message, want)
+		}
+	}
+	// The written file keeps the valid role and omits the dropped one.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "warning = bold red") {
+		t.Fatalf("saved file missing the valid role:\n%s", data)
+	}
+	if strings.Contains(string(data), "bogustoken") {
+		t.Fatalf("saved file keeps the unparseable spec:\n%s", data)
 	}
 }
 

@@ -306,19 +306,37 @@ func (t Truster) ApplyImportSecrets(ctx context.Context, plan SecretImportPlan) 
 	return report, nil
 }
 
+// planImportedKey classifies one peeked import-dir key. It mirrors planToken's
+// ordering (secret → encryptable → unusable → fix) so the import path can't
+// promise a fix gpg will refuse: a present, unowned, expired/revoked key is
+// unusable (lsign won't resurrect it), and an owned one that is expired/
+// revoked is unusable too, not owned-skip.
 func (t Truster) planImportedKey(ctx context.Context, d gpgdiag.Checker, key peekedKey) RecipientPlan {
 	rp := RecipientPlan{Token: key.Fingerprint, Fingerprint: key.Fingerprint, UID: key.UID}
+	// A key you hold the secret for is provably yours — never a local-sign
+	// target; if it isn't a valid encryption target yet and isn't
+	// expired/revoked, the fix is ultimate trust.
 	if d.HasSecret(ctx, key.Fingerprint) {
-		rp.Action = ActionOwnedSkip
+		switch {
+		case d.CanEncryptTo(ctx, key.Fingerprint):
+			rp.Action = ActionOwnedSkip
+		case d.Unusable(ctx, key.Fingerprint):
+			rp.Action = ActionUnusable
+		default:
+			rp.Action = ActionWouldOwnTrust
+		}
 		return rp
 	}
-	// If already in the keyring and encryptable, nothing to do.
+	// If already in the keyring, classify it exactly as planToken would.
 	if _, _, present := d.ResolvePrimary(ctx, key.Fingerprint); present {
-		if d.CanEncryptTo(ctx, key.Fingerprint) {
+		switch {
+		case d.CanEncryptTo(ctx, key.Fingerprint):
 			rp.Action = ActionAlreadyValid
-			return rp
+		case d.Unusable(ctx, key.Fingerprint):
+			rp.Action = ActionUnusable
+		default: // present but invalid → fixable by local-sign
+			rp.Action = ActionWouldLsign
 		}
-		rp.Action = ActionWouldLsign
 		return rp
 	}
 	// Not present yet: import then local-sign.

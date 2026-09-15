@@ -92,8 +92,9 @@ func wrapText(value string, width int) []string {
 // side: each output row is left padded/truncated to leftWidth, then sep, then
 // right padded/truncated to rightWidth. The caller guarantees
 // leftWidth+VisibleWidth(sep)+rightWidth equals the shell's inner width, so the
-// joined row fills the row exactly and workflowLine never re-truncates it
-// (which would mangle the divider). Rows are capped at height.
+// joined row fills the row exactly and the shell's line renderer (termchrome)
+// never re-truncates it (which would mangle the divider). Rows are capped at
+// height.
 func joinColumns(left, right []string, leftWidth, rightWidth int, sep string, height int) []string {
 	rows := max(len(left), len(right))
 	if height > 0 && rows > height {

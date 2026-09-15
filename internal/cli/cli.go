@@ -331,11 +331,7 @@ func (r runner) runVersion() int {
 }
 
 func (r runner) runInteractive(args []string, mfaOnly bool) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, usage)
 		return 0
@@ -794,11 +790,7 @@ func (r runner) runTheme(args []string) int {
 			return r.runThemeImport(args[1:])
 		}
 	}
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, themeUsage)
 		return 0
@@ -841,11 +833,7 @@ func (r runner) runTheme(args []string) int {
 // runThemeExport writes the active theme to a portable .theme file that any
 // sibling app (ssherpa, future TUIs) can import.
 func (r runner) runThemeExport(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, themeUsage)
 		return 0
@@ -876,11 +864,7 @@ func (r runner) runThemeExport(args []string) int {
 // runThemeImport loads a portable .theme file and writes it as the active
 // theme config (with an atomic backup of the previous one).
 func (r runner) runThemeImport(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, themeUsage)
 		return 0
@@ -970,6 +954,9 @@ func (r runner) saveThemeConfig(ctx context.Context, flags commonFlags, result u
 			message += " Backup: " + writeResult.BackupPath + "."
 		}
 	}
+	if len(result.DroppedRoles) > 0 {
+		message += " Dropped invalid roles: " + strings.Join(result.DroppedRoles, ", ") + "."
+	}
 	return ui.ThemeSaveResult{
 		Config:     result.Config,
 		Theme:      theme,
@@ -1025,11 +1012,7 @@ func formatThemeConfig(cfg termstyle.ThemeConfig) []byte {
 }
 
 func (r runner) runList(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	filter, _ := consumeStringFlag(&rest, "--filter")
 	mfaOnly := consumeBoolFlag(&rest, "--mfa")
 	if hasHelpFlag(rest) {
@@ -1064,11 +1047,7 @@ func (r runner) runList(args []string) int {
 }
 
 func (r runner) runShow(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, showUsage)
 		return 0
@@ -1098,11 +1077,7 @@ func (r runner) runShow(args []string) int {
 }
 
 func (r runner) runCopy(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	private := consumeBoolFlag(&rest, "--private")
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, copyUsage)
@@ -1117,6 +1092,10 @@ func (r runner) runCopy(args []string) int {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
 	}
+	if _, ok := findEntry(rt.entries, rest[0]); !ok {
+		fmt.Fprintf(r.stderr, "passage: entry %q not found\n", rest[0])
+		return 2
+	}
 	msg, _, err := r.copyEntry(context.Background(), rt, rest[0], private)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
@@ -1127,11 +1106,7 @@ func (r runner) runCopy(args []string) int {
 }
 
 func (r runner) runReveal(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	private := consumeBoolFlag(&rest, "--private")
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, revealUsage)
@@ -1146,6 +1121,10 @@ func (r runner) runReveal(args []string) int {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
 	}
+	if _, ok := findEntry(rt.entries, rest[0]); !ok {
+		fmt.Fprintf(r.stderr, "passage: entry %q not found\n", rest[0])
+		return 2
+	}
 	msg, err := r.revealEntry(context.Background(), rt, rest[0], private, flags)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
@@ -1156,11 +1135,7 @@ func (r runner) runReveal(args []string) int {
 }
 
 func (r runner) runTOTP(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	opts := totpOptions{
 		copy:    !consumeBoolFlag(&rest, "--no-copy"),
 		private: consumeBoolFlag(&rest, "--private"),
@@ -1188,6 +1163,10 @@ func (r runner) runTOTP(args []string) int {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
 		return 1
 	}
+	if _, ok := findEntry(rt.entries, rest[0]); !ok {
+		fmt.Fprintf(r.stderr, "passage: entry %q not found\n", rest[0])
+		return 2
+	}
 	code, msg, err := r.generateTOTP(context.Background(), rt, rest[0], opts)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "passage: %v\n", err)
@@ -1204,11 +1183,7 @@ func (r runner) runTOTP(args []string) int {
 }
 
 func (r runner) runPin(args []string, pinned bool) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if len(rest) != 1 {
 		fmt.Fprintf(r.stderr, "Usage:\n  passage %s ENTRY [--state-dir PATH]\n", map[bool]string{true: "pin", false: "unpin"}[pinned])
 		return 1
@@ -1236,11 +1211,7 @@ func (r runner) runPin(args []string, pinned bool) int {
 }
 
 func (r runner) runClear(args []string, what string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if len(rest) > 0 {
 		fmt.Fprintf(r.stderr, "passage: unexpected arguments: %s\n", strings.Join(rest, " "))
 		return 1
@@ -1283,11 +1254,7 @@ func (r runner) runClearClipboard(args []string) int {
 }
 
 func (r runner) runDoctor(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, doctorUsage)
 		return 0
@@ -1315,11 +1282,7 @@ func (r runner) runDoctor(args []string) int {
 }
 
 func (r runner) runAccess(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, accessUsage)
 		return 0
@@ -1459,11 +1422,7 @@ func readOnlyMessage(scope gpgdiag.ScopeReport) string {
 }
 
 func (r runner) runInsert(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	multiline := consumeBoolFlag(&rest, "--multiline")
 	force := consumeBoolFlag(&rest, "--force")
 	if hasHelpFlag(rest) {
@@ -1515,11 +1474,7 @@ func (r runner) runInsert(args []string) int {
 }
 
 func (r runner) runGenerate(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	noSymbols := consumeBoolFlag(&rest, "--no-symbols")
 	force := consumeBoolFlag(&rest, "--force")
 	noCopy := consumeBoolFlag(&rest, "--no-copy")
@@ -1534,11 +1489,12 @@ func (r runner) runGenerate(args []string) int {
 	entry := rest[0]
 	length := 0
 	if len(rest) == 2 {
-		length, err = strconv.Atoi(rest[1])
-		if err != nil || length <= 0 {
+		n, err := strconv.Atoi(rest[1])
+		if err != nil || n <= 0 {
 			fmt.Fprintf(r.stderr, "passage: invalid LENGTH %q\n", rest[1])
 			return 1
 		}
+		length = n
 	}
 	rt, err := r.load(flags)
 	if err != nil {
@@ -1575,11 +1531,7 @@ func (r runner) runGenerate(args []string) int {
 }
 
 func (r runner) runEdit(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, editUsage)
 		return 0
@@ -1610,11 +1562,7 @@ func (r runner) runEdit(args []string) int {
 }
 
 func (r runner) runRm(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	recursive := consumeBoolFlag(&rest, "--recursive") || consumeBoolFlag(&rest, "-r")
 	yes := consumeBoolFlag(&rest, "--yes")
 	if hasHelpFlag(rest) {
@@ -1658,11 +1606,7 @@ func (r runner) runRm(args []string) int {
 }
 
 func (r runner) runTrust(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	full := consumeBoolFlag(&rest, "--full")
 	yes := consumeBoolFlag(&rest, "--yes")
 	importDir, _ := consumeStringFlag(&rest, "--import-dir")
@@ -1845,11 +1789,7 @@ func confirm(in io.Reader, out io.Writer, prompt string) bool {
 }
 
 func (r runner) runKeys(args []string) int {
-	flags, rest, err := parseCommon(args)
-	if err != nil {
-		fmt.Fprintf(r.stderr, "passage: %v\n", err)
-		return 1
-	}
+	flags, rest := parseCommon(args)
 	if hasHelpFlag(rest) {
 		fmt.Fprint(r.stdout, keysUsage)
 		return 0
@@ -1940,7 +1880,7 @@ func (r runner) runInteractiveAction(parent context.Context, rt *runtimeState, f
 	defer cancel()
 	out := r.runInteractiveActionOnce(ctx, rt, flags, req)
 	if out.Err != nil {
-		out.Err = interactiveActionError(ctx, req, out.Err)
+		out.Err = interactiveActionError(ctx, req, timeout, out.Err)
 	}
 	return out
 }
@@ -2042,7 +1982,6 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 		if copyErr == nil {
 			out.ClipArmed = true
 			out.ClipRemaining = clipboardArmSeconds
-			out.ClipTool = res.Tool
 			out.Message = "Generated " + req.NewPath + " · copied (" + res.Tool + ")."
 		}
 		return out
@@ -2071,7 +2010,6 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 		if tool != "" {
 			out.ClipArmed = true
 			out.ClipRemaining = clipboardArmSeconds
-			out.ClipTool = tool
 		}
 		return out
 	case ui.ActionReveal:
@@ -2113,13 +2051,16 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 	}
 }
 
-func interactiveActionError(ctx context.Context, req ui.ActionRequest, err error) error {
+// interactiveActionError rewrites a context failure into a user-facing error.
+// timeout is the deadline actually used for this action (read vs write), so a
+// 60s write timeout is never reported as a 12s read timeout.
+func interactiveActionError(ctx context.Context, req ui.ActionRequest, timeout time.Duration, err error) error {
 	verb := interactiveActionVerb(req.Action)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		if req.Entry.Path == "" {
-			return fmt.Errorf("%s timed out after %s", verb, interactiveActionTimeout)
+			return fmt.Errorf("%s timed out after %s", verb, timeout)
 		}
-		return fmt.Errorf("%s %s timed out after %s; try `pass show -- %s` once outside passage to unlock or diagnose GPG", verb, req.Entry.Path, interactiveActionTimeout, req.Entry.Path)
+		return fmt.Errorf("%s %s timed out after %s; try `pass show -- %s` once outside passage to unlock or diagnose GPG", verb, req.Entry.Path, timeout, req.Entry.Path)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		if req.Entry.Path == "" {
@@ -2272,28 +2213,6 @@ type totpOptions struct {
 	at      time.Time
 }
 
-func (r runner) totpEntry(ctx context.Context, rt runtimeState, entryPath string, opts totpOptions, flags commonFlags) (string, error) {
-	code, msg, err := r.generateTOTP(ctx, rt, entryPath, opts)
-	if err != nil {
-		return "", err
-	}
-	entry, _ := findEntry(rt.entries, entryPath)
-	title := defaultString(entry.Display, entryPath)
-	if err := ui.Reveal(ctx, ui.RevealOptions{
-		Output:      r.stderr,
-		NoColor:     flags.noColor,
-		ThemeFile:   flags.themeFile,
-		Title:       title,
-		Secret:      code.Pretty,
-		Kind:        "totp",
-		Remaining:   code.Remaining,
-		NoAltScreen: flags.noAltScreen,
-	}); err != nil {
-		return "", err
-	}
-	return defaultString(msg, "TOTP ready."), nil
-}
-
 func (r runner) generateTOTP(ctx context.Context, rt runtimeState, entryPath string, opts totpOptions) (totp.Code, string, error) {
 	entry, ok := findEntry(rt.entries, entryPath)
 	if !ok {
@@ -2351,33 +2270,6 @@ func (r runner) generateTOTPCodeOnly(ctx context.Context, store passstore.Store,
 	return code, err
 }
 
-func (r runner) showDoctorUI(ctx context.Context, storeDir string, flags commonFlags) error {
-	report := gpgdiag.New(storeDir).Doctor(ctx)
-	return ui.Text(ctx, ui.TextOptions{
-		Output:      r.stderr,
-		NoColor:     flags.noColor,
-		ThemeFile:   flags.themeFile,
-		Title:       "passage doctor",
-		Lines:       doctorLines(report),
-		NoAltScreen: flags.noAltScreen,
-	})
-}
-
-func (r runner) showKeysUI(ctx context.Context, storeDir string, flags commonFlags) error {
-	keys, err := gpgdiag.New(storeDir).LocalKeys(ctx)
-	if err != nil {
-		return err
-	}
-	return ui.Text(ctx, ui.TextOptions{
-		Output:      r.stderr,
-		NoColor:     flags.noColor,
-		ThemeFile:   flags.themeFile,
-		Title:       "passage keys",
-		Lines:       keyLines(keys),
-		NoAltScreen: flags.noAltScreen,
-	})
-}
-
 func keyLines(keys []gpgdiag.LocalKey) []string {
 	var lines []string
 	for _, key := range keys {
@@ -2390,7 +2282,7 @@ func keyLines(keys []gpgdiag.LocalKey) []string {
 	return lines
 }
 
-func parseCommon(args []string) (commonFlags, []string, error) {
+func parseCommon(args []string) (commonFlags, []string) {
 	flags := commonFlags{}
 	rest := append([]string(nil), args...)
 	var ok bool
@@ -2404,7 +2296,7 @@ func parseCommon(args []string) (commonFlags, []string, error) {
 	flags.noAltScreen = consumeBoolFlag(&rest, "--no-alt-screen")
 	flags.noIntro = consumeBoolFlag(&rest, "--no-intro")
 	flags.intro = consumeBoolFlag(&rest, "--intro")
-	return flags, rest, nil
+	return flags, rest
 }
 
 func consumeBoolFlag(args *[]string, name string) bool {
