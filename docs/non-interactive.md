@@ -1,6 +1,7 @@
 # passage Non-Interactive CLI Reference
 
-This document covers the scriptable `passage` surface.
+Everything the picker does has a non-interactive twin for scripts and cron —
+stable flags, stable exit codes, and JSON envelopes when you ask for them.
 
 ## Conventions
 

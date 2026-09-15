@@ -8,18 +8,26 @@ the tag (`-ldflags -X main.version`), so there is nothing to edit in code.
 
 1. Make sure `main` is green and holds everything to ship.
 
-2. **If `github.com/0xbenc/termtheme` changed, release it first** (see that
-   repo's `RELEASING.md`), then bump the pin here:
+2. **If any pinned `0xbenc` module changed, release those first** — bottom-up,
+   `termtheme` → `termnav` / `termchrome`; `termintro` is independent
+   (each repo has its own `RELEASING.md`) — then bump the pins here:
 
    ```sh
-   go get github.com/0xbenc/termtheme@vX.Y.Z
+   go get github.com/0xbenc/termtheme@vX.Y.Z     # only the ones that changed
+   go get github.com/0xbenc/termnav@vX.Y.Z
+   go get github.com/0xbenc/termchrome@vX.Y.Z
+   go get github.com/0xbenc/termintro@vX.Y.Z
    go mod tidy && go test ./...
-   git commit -am "Bump termtheme to vX.Y.Z"
+   git commit -am "Bump term* pins"
    ```
 
-   passage pins termtheme by tag with **no `replace` directive**, so the
-   termtheme tag **must already exist on the proxy** before this release builds
-   in CI — that is why termtheme is tagged first.
+   passage pins these by tag with **no `replace` directive**, so every tag
+   **must already exist on the proxy** before this release builds in CI — that
+   is why the shared modules are tagged first, bottom-up.
+
+   Lockstep: passage and ssherpa pin identical `termtheme`/`termnav`/
+   `termchrome` versions. When one of those three bumps, bump **both** apps
+   (the hotfix exception lives in `CONTRIBUTING.md`).
 
 3. Tag and push:
 
@@ -29,7 +37,7 @@ the tag (`-ldflags -X main.version`), so there is nothing to edit in code.
    git push origin vX.Y.Z      # triggers the Release workflow
    ```
 
-If termtheme did not change, skip step 2 entirely.
+If no pinned module changed, skip step 2 entirely.
 
 ## Versioning
 
