@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/passage/internal/totp"
 	"github.com/0xbenc/passage/internal/ui"
 )
 
@@ -200,12 +202,197 @@ if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then printf '
 	if len(shown) != 6 {
 		t.Fatalf("TOTP shown onscreen = %q, want 6 digits", shown)
 	}
+	// The auto-run screen shows how long the copied code stays valid.
+	if !regexp.MustCompile(`\d+s remaining`).MatchString(stderr.String()) {
+		t.Fatalf("stderr = %q, want a remaining-time note", stderr.String())
+	}
 	data, err := os.ReadFile(clipOut)
 	if err != nil {
 		t.Fatalf("ReadFile: %v (the picker likely opened instead of auto-running TOTP); stderr=%s", err, stderr.String())
 	}
 	if string(data) != shown {
 		t.Fatalf("clipboard = %q, shown = %q", data, shown)
+	}
+}
+
+// TestRunMFAFilterSingleMatchWaitsForFreshWindow pins the sub-5s behavior: the
+// auto-run must never hand over a code that expires in <5s — it waits for the
+// next window (showing a refresh line on a piped stderr) and copies the fresh
+// code. The fake pass serves a fixed secret, so the shown code is whatever the
+// real clock produces; when the wall clock lands in the last 4 seconds of a
+// window this test takes up to ~4s, by design.
+func TestRunMFAFilterSingleMatchWaitsForFreshWindow(t *testing.T) {
+	store := fakeStore(t)
+	bin := t.TempDir()
+	clipOut := filepath.Join(bin, "clip.txt")
+	makeScript(t, bin, "pass", `if [ "$PASSWORD_STORE_DIR" != "$STORE_ROOT" ]; then echo "bad store: $PASSWORD_STORE_DIR" >&2; exit 8; fi
+if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then printf 'JBSWY3DPEHPK3PXP\n'; exit 0; fi; exit 9`)
+	makeScript(t, bin, "pbcopy", `/bin/cat > "$CLIP_OUT"`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", filepath.Join(bin, "pass"))
+	t.Setenv("CLIP_OUT", clipOut)
+	t.Setenv("STORE_ROOT", store)
+	var stdout, stderr bytes.Buffer
+	start := time.Now()
+	code := Run([]string{"mfa", "mfa", "--store-dir", store, "--state-dir", t.TempDir(), "--no-color"}, &stdout, &stderr, BuildInfo{})
+	elapsed := time.Since(start)
+	if code != 0 {
+		t.Fatalf("Run = %d, stderr=%s", code, stderr.String())
+	}
+	shown := strings.TrimSpace(stdout.String())
+	if len(shown) != 6 {
+		t.Fatalf("TOTP shown onscreen = %q, want 6 digits", shown)
+	}
+	if strings.Contains(stderr.String(), "waiting for a fresh TOTP code") {
+		// The wait fired. Its length is whatever was left of the window —
+		// as little as 1s — so there is no floor to assert here; what must
+		// hold is that the code handed over afterwards is a fresh one.
+		// (waitForTOTPRefreshClock's fake-clock tests cover the loop.)
+		if !regexp.MustCompile(`(2[5-9]|30)s remaining`).MatchString(stderr.String()) {
+			t.Fatalf("stderr = %q, want a fresh (>=25s) remaining note after the wait", stderr.String())
+		}
+		if elapsed > time.Duration(totpStaleSeconds+2)*time.Second {
+			t.Fatalf("waited %s; the wait is bounded by the %ds staleness window", elapsed, totpStaleSeconds)
+		}
+	}
+	data, err := os.ReadFile(clipOut)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != shown {
+		t.Fatalf("clipboard = %q, shown = %q", data, shown)
+	}
+}
+
+func TestShouldWaitForTOTPRefresh(t *testing.T) {
+	cases := []struct {
+		name string
+		opts totpOptions
+		code totp.Code
+		want bool
+	}{
+		{name: "no wait flag", opts: totpOptions{}, code: totp.Code{Remaining: 2}, want: false},
+		{name: "wait, stale", opts: totpOptions{wait: true}, code: totp.Code{Remaining: 4}, want: true},
+		{name: "wait, at threshold", opts: totpOptions{wait: true}, code: totp.Code{Remaining: 5}, want: true},
+		{name: "wait, just past threshold", opts: totpOptions{wait: true}, code: totp.Code{Remaining: 6}, want: false},
+		{name: "wait, almost expired", opts: totpOptions{wait: true}, code: totp.Code{Remaining: 1}, want: true},
+		{name: "wait, fresh", opts: totpOptions{wait: true}, code: totp.Code{Remaining: 30}, want: false},
+		{name: "wait, fixed --at time", opts: totpOptions{wait: true, at: time.Unix(59, 0)}, code: totp.Code{Remaining: 2}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldWaitForTOTPRefresh(tc.opts, tc.code); got != tc.want {
+				t.Fatalf("shouldWaitForTOTPRefresh = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTotpRemainingNote(t *testing.T) {
+	cases := []struct {
+		msg       string
+		remaining int
+		want      string
+	}{
+		{msg: "TOTP copied to clipboard (pbcopy).", remaining: 23, want: "TOTP copied to clipboard (pbcopy). 23s remaining."},
+		{msg: "Clipboard copy failed: no tool", remaining: 4, want: "Clipboard copy failed: no tool. 4s remaining."},
+		{msg: "", remaining: 29, want: "29s remaining."},
+	}
+	for _, tc := range cases {
+		if got := totpRemainingNote(tc.msg, tc.remaining); got != tc.want {
+			t.Fatalf("totpRemainingNote(%q,%d) = %q, want %q", tc.msg, tc.remaining, got, tc.want)
+		}
+	}
+}
+
+func TestTotpRefreshFrameCountsDown(t *testing.T) {
+	asc := termstyle.ASCIIGlyphs()
+	if got := totpRefreshFrame(asc, 0, 4*time.Second); got != "| waiting for a fresh TOTP code (refreshes in 4s)" {
+		t.Fatalf("ascii frame = %q", got)
+	}
+	if got := totpRefreshFrame(asc, 1, 1500*time.Millisecond); got != "/ waiting for a fresh TOTP code (refreshes in 2s)" {
+		t.Fatalf("ascii frame ceil = %q", got)
+	}
+	uni := termstyle.UnicodeGlyphs()
+	if got := totpRefreshFrame(uni, 0, 3*time.Second); got != uni.Spinner[0]+" waiting for a fresh TOTP code (refreshes in 3s)" {
+		t.Fatalf("unicode frame = %q", got)
+	}
+}
+
+func TestSpinnerLineRewritesAndFinishes(t *testing.T) {
+	var buf bytes.Buffer
+	s := &spinnerLine{w: &buf}
+	s.rewrite("abcd")
+	s.rewrite("ab") // shorter frame must pad, not truncate the previous tail
+	s.finish()
+	want := "\rabcd\rab  \r  \n"
+	if buf.String() != want {
+		t.Fatalf("spinner bytes = %q, want %q", buf.String(), want)
+	}
+	s.finish() // idempotent: no second clear line
+	if buf.String() != want {
+		t.Fatalf("second finish changed output: %q", buf.String())
+	}
+}
+
+func TestSpinnerLinePadsWideGlyphs(t *testing.T) {
+	g := termstyle.UnicodeGlyphs()
+	var buf bytes.Buffer
+	s := &spinnerLine{w: &buf}
+	s.rewrite(g.Spinner[0] + " abcd") // braille frame is one cell wide
+	s.rewrite(g.Spinner[1] + " ab")
+	s.finish()
+	want := "\r" + g.Spinner[0] + " abcd\r" + g.Spinner[1] + " ab  \r    \n"
+	if buf.String() != want {
+		t.Fatalf("spinner bytes = %q, want %q", buf.String(), want)
+	}
+}
+
+// TestWaitForTOTPRefreshWaitsToBoundary drives the wait loop with a fake
+// clock: it must keep polling until the boundary passes, printing the
+// piped-stderr line exactly once.
+func TestWaitForTOTPRefreshWaitsToBoundary(t *testing.T) {
+	var stderr bytes.Buffer
+	r := runner{stderr: &stderr, env: os.Environ(), build: BuildInfo{}.normalized()}
+	start := time.Unix(1_000_000, 0)
+	calls := 0
+	now := func() time.Time {
+		calls++
+		if calls == 1 {
+			return start
+		}
+		return start.Add(4 * time.Second) // the boundary
+	}
+	code := totp.Code{Remaining: 4, ValidUntil: start.Unix() + 4}
+	if err := r.waitForTOTPRefreshClock(context.Background(), code, now, time.Millisecond); err != nil {
+		t.Fatalf("waitForTOTPRefreshClock = %v", err)
+	}
+	if got := strings.Count(stderr.String(), "waiting for a fresh TOTP code (refreshes in 4s)"); got != 1 {
+		t.Fatalf("waiting line printed %d times:\n%s", got, stderr.String())
+	}
+	if calls < 2 {
+		t.Fatalf("clock polled %d times, want >=2 (must poll past the boundary)", calls)
+	}
+}
+
+// TestWaitForTOTPRefreshHonorsContext pins that a canceled context stops the
+// wait instead of sleeping out the full window.
+func TestWaitForTOTPRefreshHonorsContext(t *testing.T) {
+	var stderr bytes.Buffer
+	r := runner{stderr: &stderr, env: os.Environ(), build: BuildInfo{}.normalized()}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	code := totp.Code{Remaining: 30, ValidUntil: time.Now().Unix() + 30}
+	start := time.Now()
+	err := r.waitForTOTPRefreshClock(ctx, code, time.Now, time.Millisecond)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("waited %s; must stop at context cancel", elapsed)
 	}
 }
 
@@ -698,5 +885,43 @@ func TestIntroVersionLabel(t *testing.T) {
 		if got := introVersionLabel(in); got != want {
 			t.Fatalf("introVersionLabel(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestGenerateTOTPMessageHasNoRemainingNote pins where the remaining-time note
+// is applied. generateTOTP feeds three callers, two of which render a live
+// countdown (the picker modal's SecretRemaining and `passage totp`'s Reveal);
+// a frozen "23s remaining" glued to their message would contradict the ticking
+// one a second later. Only runAutoAction, which has no countdown on screen,
+// adds the note.
+func TestGenerateTOTPMessageHasNoRemainingNote(t *testing.T) {
+	store := fakeStore(t)
+	bin := t.TempDir()
+	clipOut := filepath.Join(bin, "clip.txt")
+	makeScript(t, bin, "pass", `if [ "$1" = show ] && [ "$2" = -- ] && [ "$3" = work/github/mfa ]; then printf 'JBSWY3DPEHPK3PXP\n'; exit 0; fi; exit 9`)
+	makeScript(t, bin, "pbcopy", `/bin/cat > "$CLIP_OUT"`)
+	t.Setenv("PATH", bin)
+	t.Setenv("PASSAGE_PASS_BINARY", filepath.Join(bin, "pass"))
+	t.Setenv("CLIP_OUT", clipOut)
+
+	var stdout, stderr bytes.Buffer
+	r := runner{stdout: &stdout, stderr: &stderr, env: os.Environ(), build: BuildInfo{}.normalized()}
+	flags := commonFlags{storeDir: store, stateDir: t.TempDir()}
+	rt, err := r.load(flags)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	code, msg, err := r.generateTOTP(context.Background(), rt, "work/github", totpOptions{copy: true})
+	if err != nil {
+		t.Fatalf("generateTOTP: %v", err)
+	}
+	if strings.Contains(msg, "remaining") {
+		t.Fatalf("msg = %q, want no remaining-time note (the callers own the countdown)", msg)
+	}
+	if !strings.HasSuffix(msg, ").") {
+		t.Fatalf("msg = %q, want the sibling clipboard-message punctuation", msg)
+	}
+	if note := totpRemainingNote(msg, code.Remaining); !strings.HasSuffix(note, "s remaining.") {
+		t.Fatalf("auto-run note = %q", note)
 	}
 }

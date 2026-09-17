@@ -30,7 +30,7 @@ For an entry `work/github`, store the secret as a sibling entry:
 pass insert work/github/mfa
 ```
 
-One line of raw base32. `otpauth://` URIs are rejected — store the secret itself. Codes are generated natively (SHA1), so `oathtool` is no longer needed. From the shell: `passage totp work/github`, and `passage mfa` opens the picker with MFA entries only.
+One line of raw base32. `otpauth://` URIs are rejected — store the secret itself. Codes are generated natively (SHA1), so `oathtool` is no longer needed. From the shell: `passage totp work/github`, and `passage mfa` opens the picker with MFA entries only — narrowed to a single entry (`passage mfa github`), it copies that TOTP directly, waiting out the window first if the code is about to expire.
 
 ## Read-only stores
 

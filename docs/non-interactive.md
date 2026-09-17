@@ -75,7 +75,9 @@ passage totp ENTRY [--json] [--no-copy] [--private] [--wait] [--at UNIX] [--stor
 
 Uses `ENTRY/mfa` when present. Direct `*/mfa` entries also work. The MFA entry
 must contain one non-empty base32 line. `--wait` waits for the next code when
-the current one has three seconds or less remaining.
+the current one has five seconds or less remaining — the same boundary the
+countdown turns red at. The wait prints a refresh line (animated on a TTY, one
+plain line on a pipe) to stderr; the code still goes to stdout.
 
 ### pin / unpin
 
