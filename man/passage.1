@@ -48,7 +48,11 @@ itself when it ends in
 .IR /mfa .
 .TP
 .B mfa
-Open the picker in MFA-only mode.
+Open the picker in MFA-only mode. When the filter narrows the store to a
+single entry, its TOTP is generated, copied, and shown directly, with the
+code's remaining validity; if the code has 5s or less left, passage waits
+for the next window (showing a refresh indicator, not a hang) and copies
+the fresh code instead.
 .TP
 .B pin / unpin
 Set or clear an entry pin.

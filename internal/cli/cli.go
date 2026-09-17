@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -469,7 +470,7 @@ func (r runner) runInteractive(args []string, mfaOnly bool) int {
 // the rest of the precedence is the pure introDecision so it can be unit-tested
 // without a TTY.
 func (r runner) shouldPlayIntro(flags commonFlags, lastVersion string) bool {
-	if !term.IsTerminal(os.Stderr.Fd()) {
+	if !isTTY(os.Stderr) {
 		return false
 	}
 	return introDecision(flags, r.env, lastVersion, r.build.Version)
@@ -755,14 +756,20 @@ func (r runner) firstRunGuidance(flags commonFlags) bool {
 // browsing or an MFA secret entry, otherwise copy.
 func (r runner) runAutoAction(ctx context.Context, rt runtimeState, entry passstore.Entry, mfaOnly bool, flags commonFlags) int {
 	if mfaOnly || isMFASecretEntry(entry) {
-		code, msg, err := r.generateTOTP(ctx, rt, entry.Path, totpOptions{copy: true})
+		// wait: the auto-run has no modal countdown to fall back on, so it
+		// never hands over a code that would expire almost immediately — it
+		// waits out the window (with a visible refresh indicator) instead.
+		code, msg, err := r.generateTOTP(ctx, rt, entry.Path, totpOptions{copy: true, wait: true})
 		if err != nil {
 			fmt.Fprintf(r.stderr, "passage: %v\n", err)
 			return 1
 		}
 		fmt.Fprintln(r.stdout, code.Value)
-		if msg != "" {
-			fmt.Fprintln(r.stderr, msg)
+		// Only this path prints the note: the picker modal and `passage totp`
+		// both render a live countdown, and a frozen "23s remaining" beside a
+		// ticking one is wrong a second later.
+		if note := totpRemainingNote(msg, code.Remaining); note != "" {
+			fmt.Fprintln(r.stderr, note)
 		}
 		return 0
 	}
@@ -2235,8 +2242,12 @@ func (r runner) generateTOTP(ctx context.Context, rt runtimeState, entryPath str
 	if err != nil {
 		return totp.Code{}, "", err
 	}
-	if opts.wait && code.Remaining <= 3 && opts.at.IsZero() {
-		time.Sleep(time.Duration(code.Remaining+1) * time.Second)
+	if shouldWaitForTOTPRefresh(opts, code) {
+		if err := r.waitForTOTPRefresh(ctx, code); err != nil {
+			return totp.Code{}, "", err
+		}
+		// The window has rolled over; regenerate from the fresh counter so
+		// the code and the remaining time it is shown with agree.
 		code, err = r.generateTOTPCodeOnly(ctx, rt.store, target, time.Now())
 		if err != nil {
 			return totp.Code{}, "", err
@@ -2270,6 +2281,124 @@ func (r runner) generateTOTPCodeOnly(ctx context.Context, store passstore.Store,
 	return code, err
 }
 
+// totpStaleSeconds is how close to the window edge a generated code is too
+// stale to hand over: with this much validity or less left, the CLI waits for
+// the next window (showing a refresh indicator) instead of returning a code
+// that would expire almost immediately. It is the same boundary termchrome's
+// UrgencyRole paints danger at for a 30s code, so "the countdown is red" and
+// "passage waits" mean the same thing. It also bounds the stall: at most 5s.
+const totpStaleSeconds = 5
+
+// totpRefreshTick is the frame interval of the TOTP refresh-wait spinner.
+const totpRefreshTick = 100 * time.Millisecond
+
+// shouldWaitForTOTPRefresh reports whether a generated code is too close to
+// expiry to hand over: the caller must wait for the next window. A fixed --at
+// time never waits — it is deterministic by construction (tests, CI).
+func shouldWaitForTOTPRefresh(opts totpOptions, code totp.Code) bool {
+	return opts.wait && code.Remaining <= totpStaleSeconds && opts.at.IsZero()
+}
+
+// totpRemainingNote appends how long the generated code stays valid, so the
+// single-match auto-run line shows the timer as well as the code. It is a
+// second sentence rather than a glyph-joined clause: the separator would be
+// the one piece of this line that never degrades for an ASCII terminal.
+func totpRemainingNote(msg string, remaining int) string {
+	note := fmt.Sprintf("%ds remaining.", remaining)
+	if msg == "" {
+		return note
+	}
+	// A clipboard error carries the backend's own wording, which does not
+	// end in a period; terminate it so the note reads as the next sentence.
+	if !strings.HasSuffix(msg, ".") {
+		msg += "."
+	}
+	return msg + " " + note
+}
+
+// waitForTOTPRefresh blocks until the current TOTP window rolls over, so a
+// code about to expire is never handed to the user. On a terminal it animates
+// a spinner with a live countdown, so the wait reads as "refreshing" rather
+// than a hang; on a pipe it prints a single line instead.
+func (r runner) waitForTOTPRefresh(ctx context.Context, code totp.Code) error {
+	return r.waitForTOTPRefreshClock(ctx, code, time.Now, totpRefreshTick)
+}
+
+// waitForTOTPRefreshClock is the testable core of waitForTOTPRefresh with an
+// injected clock and frame interval.
+func (r runner) waitForTOTPRefreshClock(ctx context.Context, code totp.Code, now func() time.Time, tick time.Duration) error {
+	deadline := time.Unix(code.ValidUntil, 0)
+	var line *spinnerLine
+	if isTTY(r.stderr) {
+		line = &spinnerLine{w: r.stderr}
+	} else {
+		fmt.Fprintf(r.stderr, "waiting for a fresh TOTP code (refreshes in %ds)\n", code.Remaining)
+	}
+	glyphs := termstyle.ResolveGlyphs(r.env)
+	for frame := 0; ; frame++ {
+		left := deadline.Sub(now())
+		if left <= 0 {
+			break
+		}
+		if line != nil {
+			line.rewrite(totpRefreshFrame(glyphs, frame, left))
+		}
+		select {
+		case <-time.After(tick):
+		case <-ctx.Done():
+			if line != nil {
+				line.finish()
+			}
+			return ctx.Err()
+		}
+	}
+	if line != nil {
+		line.finish()
+	}
+	return nil
+}
+
+// totpRefreshFrame is one spinner frame of the refresh wait: the shared glyph
+// frame plus the live countdown to the window boundary.
+func totpRefreshFrame(glyphs termstyle.GlyphSet, frame int, left time.Duration) string {
+	secs := int(math.Ceil(left.Seconds()))
+	return fmt.Sprintf("%s waiting for a fresh TOTP code (refreshes in %ds)", glyphs.Frame(frame), secs)
+}
+
+// isTTY reports whether the writer is a terminal file, which decides between
+// an animated spinner and a single status line.
+func isTTY(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(f.Fd())
+}
+
+// spinnerLine rewrites a single status line in place with \r so the refresh
+// wait animates without scrolling. Every frame is space-padded to the widest
+// one so a shorter frame never leaves the tail of a longer one behind.
+type spinnerLine struct {
+	w    io.Writer
+	last int
+}
+
+func (s *spinnerLine) rewrite(text string) {
+	width := termstyle.VisibleWidth(text)
+	if s.last > width {
+		text += strings.Repeat(" ", s.last-width)
+	}
+	if _, err := fmt.Fprint(s.w, "\r"+text); err == nil {
+		s.last = width
+	}
+}
+
+// finish clears the current frame and drops the cursor to a fresh line so the
+// result that follows never overwrites the spinner.
+func (s *spinnerLine) finish() {
+	if s.last == 0 {
+		return
+	}
+	fmt.Fprintf(s.w, "\r%s\n", strings.Repeat(" ", s.last))
+	s.last = 0
+}
 func keyLines(keys []gpgdiag.LocalKey) []string {
 	var lines []string
 	for _, key := range keys {
