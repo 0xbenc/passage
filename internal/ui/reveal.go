@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/passage/internal/util"
 )
 
 type RevealOptions struct {
@@ -29,9 +30,9 @@ func Reveal(ctx context.Context, opts RevealOptions) error {
 		return err
 	}
 	model := revealModel{
-		title:       defaultString(opts.Title, "Reveal"),
+		title:       util.DefaultString(opts.Title, "Reveal"),
 		secret:      opts.Secret,
-		kind:        defaultString(opts.Kind, "secret"),
+		kind:        util.DefaultString(opts.Kind, "secret"),
 		remaining:   opts.Remaining,
 		theme:       theme.WithNoColor(theme.NoColor || opts.NoColor),
 		noAltScreen: opts.NoAltScreen,

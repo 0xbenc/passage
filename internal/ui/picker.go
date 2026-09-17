@@ -14,6 +14,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/passstore"
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/passage/internal/util"
 	"github.com/0xbenc/termnav/render"
 )
 
@@ -156,7 +157,7 @@ func Pick(ctx context.Context, entries []passstore.Entry, opts PickOptions) (Pic
 	}
 	picker, ok := final.(pickerModel)
 	if !ok {
-		return PickResult{}, nil
+		return PickResult{}, fmt.Errorf("unexpected final model type: %T", final)
 	}
 	result := PickResult{
 		Action:  picker.action,
@@ -290,7 +291,7 @@ func newPickerModel(entries []passstore.Entry, opts PickOptions, theme termstyle
 		selected:       -1,
 		theme:          theme.WithNoColor(theme.NoColor || opts.NoColor),
 		noColor:        opts.NoColor,
-		title:          defaultString(opts.Title, "passage"),
+		title:          util.DefaultString(opts.Title, "passage"),
 		version:        strings.TrimSpace(opts.Version),
 		storeRoot:      opts.StoreRoot,
 		message:        opts.Message,
@@ -806,7 +807,7 @@ func (m pickerModel) computeLayout(theme pickerTheme) layoutSpec {
 }
 
 func (m pickerModel) titleLine() string {
-	title := strings.ToUpper(defaultString(m.title, "passage"))
+	title := strings.ToUpper(util.DefaultString(m.title, "passage"))
 	if m.version != "" {
 		title += "  " + m.version
 	}
@@ -1619,7 +1620,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 		m.secretHidden = false
 		lines := wrapSecret(out.Secret, max(20, m.width-8))
 		modal := &pickerModal{
-			title:     defaultString(out.SecretTitle, "Reveal"),
+			title:     util.DefaultString(out.SecretTitle, "Reveal"),
 			lines:     lines,
 			footer:    "press any key to return",
 			danger:    out.SecretKind == "password",
@@ -1640,7 +1641,7 @@ func (m *pickerModel) applyOutcome(id int, out ActionOutcome) {
 	}
 	if len(out.TextLines) > 0 {
 		m.modal = &pickerModal{
-			title:  defaultString(out.TextTitle, "passage"),
+			title:  util.DefaultString(out.TextTitle, "passage"),
 			lines:  append([]string(nil), out.TextLines...),
 			footer: termstyle.Footer([]termstyle.KeyHint{{Key: "up/down", Label: "scroll"}, {Key: "enter/esc", Label: "close"}}, 0),
 			scroll: true,
@@ -1963,11 +1964,4 @@ func safeTextInput(text string) bool {
 		}
 	}
 	return true
-}
-
-func defaultString(value string, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
 }

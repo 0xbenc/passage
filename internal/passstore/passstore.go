@@ -18,6 +18,7 @@ import (
 	"github.com/0xbenc/passage/internal/fuzzy"
 	"github.com/0xbenc/passage/internal/procutil"
 	"github.com/0xbenc/passage/internal/state"
+	"github.com/0xbenc/passage/internal/util"
 )
 
 const DefaultStoreName = ".password-store"
@@ -39,9 +40,9 @@ type Store struct {
 }
 
 func ResolveStoreDir(env []string) (string, error) {
-	values := envMap(env)
+	values := util.EnvMap(env)
 	if dir := strings.TrimSpace(values["PASSWORD_STORE_DIR"]); dir != "" {
-		return expandHome(filepath.Clean(dir))
+		return util.ExpandHome(filepath.Clean(dir))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -51,7 +52,7 @@ func ResolveStoreDir(env []string) (string, error) {
 }
 
 func ResolvePassBinary(env []string) string {
-	values := envMap(env)
+	values := util.EnvMap(env)
 	if binary := strings.TrimSpace(values["PASSAGE_PASS_BINARY"]); binary != "" {
 		return binary
 	}
@@ -59,7 +60,7 @@ func ResolvePassBinary(env []string) string {
 }
 
 func New(root string, passBinary string) Store {
-	return Store{Root: filepath.Clean(root), PassBinary: defaultString(passBinary, "pass")}
+	return Store{Root: filepath.Clean(root), PassBinary: util.DefaultString(passBinary, "pass")}
 }
 
 func (s Store) Discover() ([]string, error) {
@@ -609,39 +610,4 @@ func compactSorted(values []string) []string {
 		}
 	}
 	return out
-}
-
-func envMap(env []string) map[string]string {
-	if env == nil {
-		env = os.Environ()
-	}
-	out := make(map[string]string, len(env))
-	for _, item := range env {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			out[key] = value
-		}
-	}
-	return out
-}
-
-func expandHome(path string) (string, error) {
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home: %w", err)
-		}
-		if path == "~" {
-			return home, nil
-		}
-		return filepath.Join(home, path[2:]), nil
-	}
-	return path, nil
-}
-
-func defaultString(value string, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
 }

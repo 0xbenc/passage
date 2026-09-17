@@ -24,6 +24,7 @@ import (
 	"github.com/0xbenc/passage/internal/termstyle"
 	"github.com/0xbenc/passage/internal/totp"
 	"github.com/0xbenc/passage/internal/ui"
+	"github.com/0xbenc/passage/internal/util"
 	"github.com/0xbenc/termintro"
 	"github.com/0xbenc/termtheme"
 	"github.com/charmbracelet/x/term"
@@ -174,9 +175,9 @@ type BuildInfo struct {
 
 func (b BuildInfo) normalized() BuildInfo {
 	return BuildInfo{
-		Version: defaultString(b.Version, "dev"),
-		Commit:  defaultString(b.Commit, "none"),
-		Date:    defaultString(b.Date, "unknown"),
+		Version: util.DefaultString(b.Version, "dev"),
+		Commit:  util.DefaultString(b.Commit, "none"),
+		Date:    util.DefaultString(b.Date, "unknown"),
 	}
 }
 
@@ -534,13 +535,13 @@ func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.
 		return "Trust: " + err.Error(), true
 	}
 	if !plan.Actionable() {
-		return defaultString(plan.Scope, "this folder") + " is already writable.", false
+		return util.DefaultString(plan.Scope, "this folder") + " is already writable.", false
 	}
 	fmt.Fprintln(os.Stderr)
 	for _, line := range trustPlanLines(plan) {
 		fmt.Fprintln(os.Stderr, line)
 	}
-	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Apply trust to %d key(s) to make %s writable? [y/N] ", countTrustActions(plan), defaultString(plan.Scope, "this folder"))) {
+	if !confirm(os.Stdin, os.Stderr, fmt.Sprintf("Apply trust to %d key(s) to make %s writable? [y/N] ", countTrustActions(plan), util.DefaultString(plan.Scope, "this folder"))) {
 		return "Trust cancelled.", false
 	}
 	report, err := tr.Apply(ctx, plan, gpgtrust.Lsign, false)
@@ -554,7 +555,7 @@ func (r runner) gapTrust(ctx context.Context, rt *runtimeState, entry passstore.
 		}
 	}
 	if report.NowWritable {
-		return fmt.Sprintf("Trusted %d key(s); %s is now writable.", signed, defaultString(plan.Scope, "this folder")), false
+		return fmt.Sprintf("Trusted %d key(s); %s is now writable.", signed, util.DefaultString(plan.Scope, "this folder")), false
 	}
 	return fmt.Sprintf("Local-signed %d key(s), but the folder is still not writable.", signed), true
 }
@@ -689,7 +690,7 @@ func secretImportPlanLines(plan gpgtrust.SecretImportPlan) []string {
 		if k.HasSecret {
 			kind = "secret key → yours (ultimate trust)"
 		}
-		label := defaultString(k.UID, k.Fingerprint)
+		label := util.DefaultString(k.UID, k.Fingerprint)
 		lines = append(lines, fmt.Sprintf("  %s  %s  %s", label, shortFingerprint(k.Fingerprint), kind))
 	}
 	return lines
@@ -1729,13 +1730,13 @@ func trustActionLabel(action gpgtrust.Action, willImport bool) string {
 func trustPlanLines(plan gpgtrust.Plan) []string {
 	var lines []string
 	if plan.GPGIDPath != "" {
-		lines = append(lines, "scope: "+defaultString(plan.Scope, "(root)"), ".gpg-id: "+plan.GPGIDPath)
+		lines = append(lines, "scope: "+util.DefaultString(plan.Scope, "(root)"), ".gpg-id: "+plan.GPGIDPath)
 	} else {
 		lines = append(lines, "import dir: "+plan.Scope)
 	}
 	lines = append(lines, "strength: "+plan.Strength, "", "plan:")
 	for _, r := range plan.Recipients {
-		label := defaultString(r.UID, r.Token)
+		label := util.DefaultString(r.UID, r.Token)
 		fp := shortFingerprint(r.Fingerprint)
 		action := trustActionLabel(r.Action, r.WillImport)
 		if fp != "" {
@@ -2045,9 +2046,9 @@ func (r runner) runInteractiveActionOnce(ctx context.Context, rt *runtimeState, 
 			return ui.ActionOutcome{Err: refreshErr}
 		}
 		return ui.ActionOutcome{
-			Message:         defaultString(msg, "TOTP ready."),
+			Message:         util.DefaultString(msg, "TOTP ready."),
 			Entries:         entries,
-			SecretTitle:     defaultString(req.Entry.Display, req.Entry.Path),
+			SecretTitle:     util.DefaultString(req.Entry.Display, req.Entry.Path),
 			SecretKind:      "totp",
 			Secret:          code.Pretty,
 			SecretRemaining: code.Remaining,
@@ -2487,7 +2488,7 @@ func doctorLines(report gpgdiag.DoctorReport) []string {
 		"store: " + report.StoreRoot,
 		fmt.Sprintf("pass: %s", okLabel(report.PassOK)),
 		fmt.Sprintf("gpg: %s", okLabel(report.GPGOK)),
-		"clipboard: " + defaultString(strings.Join(report.Clipboard, ", "), "none"),
+		"clipboard: " + util.DefaultString(strings.Join(report.Clipboard, ", "), "none"),
 		"",
 		"stores:",
 	}
@@ -2600,13 +2601,6 @@ func writerOrDiscard(w io.Writer) io.Writer {
 		return io.Discard
 	}
 	return w
-}
-
-func defaultString(value string, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
 }
 
 type listResponse struct {

@@ -101,5 +101,8 @@ func copyOSC52(ctx context.Context, text []byte) (Result, error) {
 	if _, err := file.WriteString(sequence); err != nil {
 		return Result{}, fmt.Errorf("osc52 failed: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		return Result{}, fmt.Errorf("osc52 sync failed: %w", err)
+	}
 	return Result{Tool: tool}, nil
 }

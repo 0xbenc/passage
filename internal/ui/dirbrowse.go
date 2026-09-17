@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/0xbenc/passage/internal/termstyle"
+	"github.com/0xbenc/passage/internal/util"
 	"github.com/0xbenc/termnav"
 	"github.com/0xbenc/termnav/source"
 	"github.com/0xbenc/termnav/teax"
@@ -74,7 +75,7 @@ func BrowseKeyDir(ctx context.Context, opts BrowseKeyDirOptions) (path string, i
 		Validate:    validate,
 	}
 
-	title := defaultString(opts.Title, "choose a folder")
+	title := util.DefaultString(opts.Title, "choose a folder")
 	render := func(m termnav.Model) tea.View {
 		v := tea.NewView(renderDirBrowse(m, pickerTheme{theme: theme}, title, opts.SelectFiles))
 		v.AltScreen = !opts.NoAltScreen

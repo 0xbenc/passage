@@ -156,20 +156,6 @@ func splitRendered(value string) []string {
 	return strings.Split(value, "\n")
 }
 
-func max(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func clamp(value int, lo int, hi int) int {
 	if value < lo {
 		return lo

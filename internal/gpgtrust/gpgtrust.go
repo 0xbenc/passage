@@ -21,6 +21,7 @@ import (
 
 	"github.com/0xbenc/passage/internal/gpgdiag"
 	"github.com/0xbenc/passage/internal/passstore"
+	"github.com/0xbenc/passage/internal/util"
 )
 
 // Strength selects how much trust Apply confers.
@@ -140,7 +141,7 @@ func (t Truster) PlanRecipients(ctx context.Context, scope string, strength Stre
 	}
 	plan := Plan{
 		SchemaVersion: 1,
-		Scope:         relScope(t.StoreRoot, filepath.Dir(gpgIDPath)),
+		Scope:         util.RelScope(t.StoreRoot, filepath.Dir(gpgIDPath)),
 		GPGIDPath:     gpgIDPath,
 		Strength:      strength.String(),
 	}
@@ -591,12 +592,4 @@ func keyFiles(dir string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
-}
-
-func relScope(root, dir string) string {
-	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == "." {
-		return ""
-	}
-	return filepath.ToSlash(rel)
 }

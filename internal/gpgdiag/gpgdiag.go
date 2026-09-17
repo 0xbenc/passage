@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/0xbenc/passage/internal/passstore"
+	"github.com/0xbenc/passage/internal/util"
 )
 
 type Checker struct {
@@ -185,7 +186,7 @@ func (c Checker) Access(ctx context.Context, entry string) (ScopeReport, error) 
 	}
 	report := c.reportForRecipients(ctx, ids)
 	scopeDir := filepath.Dir(gpgIDPath)
-	report.Scope = relScope(root, scopeDir)
+	report.Scope = util.RelScope(root, scopeDir)
 	report.Label = labelFor(report.Scope)
 	report.Path = scopeDir
 	report.GPGIDPath = gpgIDPath
@@ -538,14 +539,6 @@ func labelFor(rel string) string {
 		return "default"
 	}
 	return rel
-}
-
-func relScope(root, dir string) string {
-	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == "." {
-		return ""
-	}
-	return filepath.ToSlash(rel)
 }
 
 // OwnerTrustLabel maps a gpg ownertrust value to its name. The trustdb encoding

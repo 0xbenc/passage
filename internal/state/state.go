@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/0xbenc/passage/internal/fsutil"
+	"github.com/0xbenc/passage/internal/util"
 )
 
 const SchemaVersion = 1
@@ -40,9 +41,9 @@ func Empty() State {
 }
 
 func ResolveDir(env []string) (string, error) {
-	values := envMap(env)
+	values := util.EnvMap(env)
 	if dir := strings.TrimSpace(values["PASSAGE_STATE_DIR"]); dir != "" {
-		return expandHome(filepath.Clean(dir))
+		return util.ExpandHome(filepath.Clean(dir))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -52,7 +53,7 @@ func ResolveDir(env []string) (string, error) {
 		return filepath.Join(home, "Library", "Application Support", "passage"), nil
 	}
 	if xdg := strings.TrimSpace(values["XDG_STATE_HOME"]); xdg != "" {
-		return expandHome(filepath.Join(xdg, "passage"))
+		return util.ExpandHome(filepath.Join(xdg, "passage"))
 	}
 	return filepath.Join(home, ".local", "state", "passage"), nil
 }
@@ -254,32 +255,4 @@ func readLegacyTSV(path string) (State, bool, string) {
 		st.Records = append(st.Records, record)
 	}
 	return st.normalized(), true, ""
-}
-
-func envMap(env []string) map[string]string {
-	if env == nil {
-		env = os.Environ()
-	}
-	out := make(map[string]string, len(env))
-	for _, item := range env {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			out[key] = value
-		}
-	}
-	return out
-}
-
-func expandHome(path string) (string, error) {
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home: %w", err)
-		}
-		if path == "~" {
-			return home, nil
-		}
-		return filepath.Join(home, path[2:]), nil
-	}
-	return path, nil
 }

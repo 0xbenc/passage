@@ -116,9 +116,6 @@ func createBackup(path string, data []byte, mode os.FileMode, opts WriteOptions)
 	if err := file.Sync(); err != nil {
 		return "", fmt.Errorf("sync backup %s: %w", name, err)
 	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("close backup %s: %w", name, err)
-	}
 	return name, nil
 }
 
